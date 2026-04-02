@@ -229,10 +229,11 @@ async def nuke_action(guild, member, action_type: str):
 
 # ─── NOMS DES RÔLES TICKETS (à personnaliser selon ton serveur) ───────────────
 # Change ces noms pour qu'ils correspondent EXACTEMENT aux rôles dans ton serveur
-ROLE_GESTION_STAFF  = "⛩️ ⋮ Gestion Staff"
-ROLE_GESTION_ABUS   = "🏮 ⋮ Gestion Abus"
-ROLE_COD            = "Kozakura C.O.D"       # Peut tout voir
-ROLE_PARTENARIAT    = "Partenariat"           # Visible uniquement par C.O.D
+ROLE_GESTION_STAFF  = "Gestion"
+ROLE_GESTION_ABUS   = "Support"
+ROLE_COD            = "B#tch"                # Peut tout voir
+ROLE_PARTENARIAT    = "Partenariat"           # Visible uniquement par B#tch
+ROLE_JUGE           = "Gestion"              # Rôle requis pour le tribunal
 
 # ─── UTILITAIRES ──────────────────────────────────────────────────────────────
 def xp_for_level(lvl): return int(100 * (lvl ** 1.5))
@@ -533,7 +534,7 @@ async def on_message(message):
             )
             e_threat.add_field(name="Message", value=f"||{message.content[:300]}||")
             e_threat.add_field(name="Membre", value=f"{author} (`{author.id}`)")
-            staff_role = discord.utils.get(guild.roles, name="⛩️ ⋮ Gestion Staff")
+            staff_role = discord.utils.get(guild.roles, name="Gestion")
             mention_txt = staff_role.mention if staff_role else ""
             await log_security(guild, e_threat)
             sec_ch = discord.utils.find(lambda c: any(n in c.name.lower() for n in SECURITY_LOG_NAMES), guild.text_channels)
@@ -664,7 +665,7 @@ async def on_message(message):
 
     # Détecter conflit
     if await detect_conflict(message.content):
-        staff_role = discord.utils.get(guild.roles, name="⛩️ ⋮ Gestion Staff")
+        staff_role = discord.utils.get(guild.roles, name="Gestion")
         alert_ch   = discord.utils.find(lambda c: "log" in c.name.lower() or "staff" in c.name.lower(), guild.text_channels)
         if alert_ch:
             e = discord.Embed(
@@ -804,10 +805,10 @@ async def log_sanction(guild, member, type_sanction, reason, moderator, extra=""
     return e
 
 # ─── RÔLES AUTORISÉS POUR LES SANCTIONS ──────────────────────────────────────
-ROLES_BAN  = ("ykoza", "Univer", "Kozakura C.O.D", "Co-Fondateur", "Développer", "perm ban")
-ROLES_KICK = ("ykoza", "Univer", "Kozakura C.O.D", "Co-Fondateur", "Développer", "perm ban")
-ROLES_MUTE = ["ykoza", "Univer", "Kozakura C.O.D", "Co-Fondateur", "Développer", "perm ban", "⛩️ ⋮ Gestion Staff", "🏮 ⋮ Gestion Abus"]
-ROLES_WARN = ["ykoza", "Univer", "Kozakura C.O.D", "Co-Fondateur", "Développer", "perm ban", "⛩️ ⋮ Gestion Staff", "🏮 ⋮ Gestion Abus"]
+ROLES_BAN  = ("B#tch", "Univers", "Queen", "Baby admin", "Développer", "[+] Kozakura gestion")
+ROLES_KICK = ("B#tch", "Univers", "Queen", "Baby admin", "Développer", "[+] Kozakura gestion")
+ROLES_MUTE = ["B#tch", "Univers", "Queen", "Baby admin", "Développer", "[+] Kozakura gestion", "Gestion", "Support"]
+ROLES_WARN = ["B#tch", "Univers", "Queen", "Baby admin", "Développer", "[+] Kozakura gestion", "Gestion", "Support"]
 
 def has_sanction_role(member, roles_list):
     """Vérifie si le membre a l'un des rôles autorisés"""
@@ -1466,7 +1467,7 @@ TICKET_TYPES = {
         "style": discord.ButtonStyle.red,
     },
     "cod": {
-        "label": "👑 Contacter Kozakura C.O.D",
+        "label": "👑 Contacter B#tch",
         "emoji": "👑",
         "color": discord.Color.gold(),
         "role":  ROLE_COD,
@@ -1558,7 +1559,7 @@ async def ticketpanel(ctx):
             "⚒️ **Les tickets Gestion Staff :** Pour devenir staff, réclamer un rank up ou récupérer des rôles.\n\n"
             "🔴 **Les tickets Gestion Abus :** Pour signaler un abus ou un conflit avec un membre ou staff. "
             "Défends ton innocence si tu es muté injustement.\n\n"
-            "👑 **Les tickets Kozakura C.O.D :** Pour contacter la direction du serveur. "
+            "👑 **Les tickets B#tch :** Pour contacter la direction du serveur. "
             "Décalages, fusions, fournisseurs...\n\n"
             "🤝 **Les tickets Partenariat :** Pour proposer un partenariat avec le serveur.\n\n"
             "⚠️ *Toute demande concernant les giveaways et concours nitro ne sont pas pris en charge.*\n\n"
@@ -1583,7 +1584,7 @@ class TicketPanelView(discord.ui.View):
     async def btn_abus(self, interaction: discord.Interaction, _: discord.ui.Button):
         await open_ticket(interaction, "abus")
 
-    @discord.ui.button(label="👑 Contacter Kozakura C.O.D", style=discord.ButtonStyle.grey, custom_id="ticket_cod", row=1)
+    @discord.ui.button(label="👑 Contacter B#tch", style=discord.ButtonStyle.grey, custom_id="ticket_cod", row=1)
     async def btn_cod(self, interaction: discord.Interaction, _: discord.ui.Button):
         await open_ticket(interaction, "cod")
 
@@ -1644,7 +1645,7 @@ async def open_ticket(interaction: discord.Interaction, ticket_type: str):
             f"Bonjour {author.mention} ! 👋\n\n"
             f"**{cfg['description']}**\n\n"
             f"Décris ton problème en détail, notre équipe {role_mention} te répondra dès que possible.\n\n"
-            f"{'⚠️ Ce ticket est géré uniquement par **Kozakura C.O.D**.' if ticket_type == 'partenariat' else ''}"
+            f"{'⚠️ Ce ticket est géré uniquement par **B#tch**.' if ticket_type == 'partenariat' else ''}"
         ),
         color=cfg["color"],
         timestamp=datetime.utcnow()
@@ -2088,7 +2089,7 @@ async def help(ctx, categorie: str = None):
 
         elif cat == "tickets":
             e.title = "🎫 Tickets"
-            e.description = "4 types : **Gestion Staff** | **Gestion Abus** | **Kozakura C.O.D** | **Partenariat**"
+            e.description = "4 types : **Gestion** | **Support** | **B#tch** | **Partenariat**"
             e.add_field(name="!ticketpanel",                   value="Envoie le panel avec les 4 boutons", inline=False)
             e.add_field(name="!tickets",                       value="Liste tous les tickets ouverts", inline=False)
             e.add_field(name="!claim",                         value="Prendre en charge le ticket actuel ✋", inline=False)
@@ -3029,7 +3030,7 @@ async def lockdown(ctx, *, raison: str = "Mesure de sécurité d'urgence"):
     await log_security(guild, e)
 
     # Annoncer dans le salon actuel
-    staff_role = discord.utils.get(guild.roles, name="⛩️ ⋮ Gestion Staff")
+    staff_role = discord.utils.get(guild.roles, name="Gestion")
     if staff_role:
         await ctx.send(f"🚨 {staff_role.mention} — Serveur en lockdown !")
 
@@ -3256,7 +3257,7 @@ async def honeypot_listener(message):
     e.add_field(name="Membre", value=f"{member} (`{member.id}`)")
     e.add_field(name="Compte créé", value=member.created_at.strftime('%d/%m/%Y'))
 
-    staff_role = discord.utils.get(guild.roles, name="⛩️ ⋮ Gestion Staff")
+    staff_role = discord.utils.get(guild.roles, name="Gestion")
     mention    = staff_role.mention if staff_role else ""
     await log_security(guild, e)
 
@@ -3479,8 +3480,8 @@ async def quarantine_cmd(ctx, member: discord.Member, *, raison: str = "Compte s
         color=discord.Color.orange())
 
 # ── Détection usurpation d'identité staff ─────────────────────────────────────
-STAFF_ROLES_DETECT = ["ykoza", "Univer", "Kozakura C.O.D", "Co-Fondateur", "Développer",
-                      "⛩️ ⋮ Gestion Staff", "🏮 ⋮ Gestion Abus", "perm ban", "perm juge"]
+STAFF_ROLES_DETECT = ["B#tch", "Univers", "Queen", "Baby admin", "Développer",
+                      "[+] Kozakura gestion", "Gestion", "Support"]
 
 @bot.listen("on_member_update")
 async def detect_impersonation(before, after):
@@ -3520,7 +3521,7 @@ async def detect_impersonation(before, after):
             e.add_field(name="Ressemble à", value=staff_name)
             e.set_footer(text="Kozakura Security • Action manuelle requise")
 
-            staff_role = discord.utils.get(guild.roles, name="⛩️ ⋮ Gestion Staff")
+            staff_role = discord.utils.get(guild.roles, name="Gestion")
             await log_security(guild, e)
             sec_ch = discord.utils.find(lambda c: any(n in c.name.lower() for n in SECURITY_LOG_NAMES), guild.text_channels)
             if sec_ch:
@@ -4434,7 +4435,7 @@ class TribunalView(discord.ui.View):
         # Vérif permission juge
         juge_role = discord.utils.get(interaction.guild.roles, name=ROLE_JUGE)
         if juge_role and juge_role not in interaction.user.roles:
-            return await interaction.response.send_message("❌ Tu n'as pas le rôle **perm juge**.", ephemeral=True)
+            return await interaction.response.send_message("❌ Tu n'as pas le rôle **Gestion**.", ephemeral=True)
 
         guild   = interaction.guild
         accused = guild.get_member(self.accused_id)
@@ -4517,7 +4518,7 @@ class TribunalView(discord.ui.View):
 async def tribunal(ctx, accused: discord.Member, vote_type: str = "ban", *, motif: str = "Aucun motif"):
     """
     !tribunal @membre [ban/kick/mute] [motif]
-    Nécessite le rôle 'perm juge'
+    Nécessite le rôle 'Gestion'
     """
     # Vérif rôle juge
     juge_role = discord.utils.get(ctx.guild.roles, name=ROLE_JUGE)
