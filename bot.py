@@ -122,31 +122,43 @@ custom_cmds_db = load_json("custom_commands.json", {})
 reminders_db   = load_json("reminders.json", {})
 reaction_roles = load_json("reaction_roles.json", {})
 tickets_db     = load_json("tickets.json", {})
+nsfw_words_db  = load_json("nsfw_words.json", {"words": []})
+user_prefs_db  = load_json("user_prefs.json", {})   # pseudo préféré IA
 
 # ─── VARIABLES EN MÉMOIRE ─────────────────────────────────────────────────────
 message_tracker  = defaultdict(list)
 raid_tracker     = []
 xp_cooldowns     = {}
 BANNED_WORDS     = ["badword1", "badword2"]
-NSFW_WORDS       = [
-    # Demandes explicites de contenu sexuel / nudes
+
+# NSFW_WORDS : liste de base fusionnée avec la DB persistante
+_NSFW_BASE = [
     "envoie des nudes", "envoie tes nudes", "envoie moi tes nudes",
     "montre tes seins", "montre ta bite", "montre ton cul",
     "t'as des nudes", "tu as des nudes", "tes nudes",
     "send nudes", "send pics", "nude stp", "nude svp",
     "photo intime", "photos intimes", "video intime",
-    # Harcèlement sexuel
     "suce moi", "lèche moi", "lache moi", "baise moi",
     "viens baiser", "on baise", "tu veux baiser",
     "je veux te baiser", "je vais te niquer",
     "tu veux sucer", "tu veux te faire",
-    # Demandes inappropriées générales
     "cam privée", "cam privee", "cam sex", "snap privé",
     "echange photo", "échange photo", "echange snap",
     "montre toi nue", "montre toi nu",
     "t'es chaude", "t as chaud", "t'es bonne",
     "sextape", "sex tape",
 ]
+# Fusionner base + mots ajoutés via !addnsfw (persistés en JSON)
+NSFW_WORDS = list({*_NSFW_BASE, *nsfw_words_db.get("words", [])})
+
+# Mots-clés NSFW pour la détection IA (réponse éducative plutôt que sanction)
+NSFW_AI_PATTERNS = [
+    "nudes", "nude", "photo intime", "content sexuel", "contenu sexuel",
+    "envoie moi", "montre toi", "harcèlement", "harcelement",
+]
+
+# Salons "confidentiels" — alert si image envoyée
+PRIVATE_CHANNEL_KEYWORDS = ["privé", "prive", "confidentiel", "staff", "admin", "direction", "secret"]
 SUSPICIOUS_LINKS = ["bit.ly", "free-nitro", "discord-gift", "steamcommunity.ru", "discordnitro", "nitro-gift", "free-steam"]
 XP_PER_MSG       = 10
 XP_COOLDOWN      = 60
@@ -469,35 +481,57 @@ async def on_message(message):
     # ── Détection NSFW / harcèlement sexuel ──────────────────────────────────
     for phrase in NSFW_WORDS:
         if phrase in low:
-            # Supprimer le message
-            try:
-                await message.delete()
-            except Exception:
-                pass
+            try: await message.delete()
+            except Exception: pass
 
-            # Mute 1h via timeout Discord
-            until = datetime.utcnow() + timedelta(hours=1)
-            try:
-                await author.timeout(until, reason="[Auto-mod] Contenu NSFW / harcèlement sexuel détecté")
-            except Exception:
-                pass
+            # ── Sanction progressive basée sur les warns ──────────────────
+            gid = str(guild.id); uid = str(author.id)
+            warnings_db.setdefault(gid, {}).setdefault(uid, []).append(
+                {"reason": f"[Auto-mod NSFW] {phrase}", "by": "bot", "date": str(datetime.utcnow())}
+            )
+            save_json("warnings.json", warnings_db)
+            warn_count = len(warnings_db[gid][uid])
+            add_sanction(guild, author, "Warn", f"[Auto-mod NSFW] {phrase}", guild.me)
 
-            # Alerte dans logs-securite avec mention Gestion Abus
-            abus_role = discord.utils.get(guild.roles, name=ROLE_GESTION_ABUS)
-            mention_abus = abus_role.mention if abus_role else "**@Gestion Abus**"
+            action_taken = ""
+            if warn_count == 1:
+                action_taken = "⚠️ Avertissement #1 enregistré."
+            elif warn_count == 2:
+                until = datetime.utcnow() + timedelta(minutes=10)
+                try: await author.timeout(until, reason="[Auto-mod NSFW] 2ème infraction")
+                except Exception: pass
+                action_taken = "🔇 Mute 10 min (2ème infraction)."
+            elif warn_count == 3:
+                until = datetime.utcnow() + timedelta(hours=1)
+                try: await author.timeout(until, reason="[Auto-mod NSFW] 3ème infraction")
+                except Exception: pass
+                action_taken = "🔇 Mute 1h (3ème infraction)."
+            elif warn_count == 4:
+                try: await author.kick(reason="[Auto-mod NSFW] 4ème infraction")
+                except Exception: pass
+                action_taken = "👟 Kick automatique (4ème infraction)."
+            else:
+                try: await guild.ban(author, reason="[Auto-mod NSFW] 5ème+ infraction", delete_message_days=1)
+                except Exception: pass
+                action_taken = "🔨 Ban automatique (5ème+ infraction)."
+
+            # ── Alerte staff ──────────────────────────────────────────────
+            gestion_role = discord.utils.get(guild.roles, name=ROLE_GESTION_STAFF)
+            mention_staff = gestion_role.mention if gestion_role else "**@Gestion**"
 
             e_nsfw = discord.Embed(
                 title="🔞 CONTENU NSFW / HARCÈLEMENT DÉTECTÉ",
                 description=(
                     f"{author.mention} a envoyé un message à caractère sexuel ou de harcèlement "
                     f"dans {message.channel.mention}.\n\n"
-                    f"**Action automatique :** Mute 1h appliqué."
+                    f"**Action automatique :** {action_taken}"
                 ),
                 color=discord.Color.dark_red(),
                 timestamp=datetime.utcnow()
             )
-            e_nsfw.add_field(name="👤 Membre", value=f"{author} (`{author.id}`)", inline=True)
-            e_nsfw.add_field(name="📌 Salon", value=message.channel.mention, inline=True)
+            e_nsfw.add_field(name="👤 Membre",      value=f"{author} (`{author.id}`)", inline=True)
+            e_nsfw.add_field(name="📌 Salon",        value=message.channel.mention, inline=True)
+            e_nsfw.add_field(name="⚠️ Warns total", value=f"**{warn_count}**", inline=True)
             e_nsfw.add_field(name="🔑 Déclencheur", value=f"`{phrase}`", inline=True)
             e_nsfw.add_field(name="💬 Contenu supprimé", value=f"||{message.content[:400]}||", inline=False)
             e_nsfw.set_thumbnail(url=author.display_avatar.url)
@@ -508,15 +542,42 @@ async def on_message(message):
                 guild.text_channels
             )
             if sec_ch:
-                await sec_ch.send(content=f"🚨 {mention_abus} — Contenu NSFW détecté !", embed=e_nsfw)
+                await sec_ch.send(content=f"🚨 {mention_staff} — Contenu NSFW ({warn_count} warn) !", embed=e_nsfw)
             else:
                 await log_security(guild, e_nsfw)
 
             await message.channel.send(
-                f"{author.mention} ⛔ Message supprimé — contenu inapproprié. Tu es mute 1h.",
+                f"{author.mention} ⛔ Message supprimé — contenu inapproprié. ({action_taken})",
                 delete_after=8
             )
             return
+
+    # ── Anti-screenshot dans salons confidentiels ─────────────────────────────
+    if message.attachments:
+        ch_name = message.channel.name.lower()
+        if any(kw in ch_name for kw in PRIVATE_CHANNEL_KEYWORDS):
+            for att in message.attachments:
+                if att.content_type and att.content_type.startswith("image"):
+                    gestion_role = discord.utils.get(guild.roles, name=ROLE_GESTION_STAFF)
+                    mention_staff = gestion_role.mention if gestion_role else "**@Gestion**"
+                    e_screen = discord.Embed(
+                        title="📸 Image dans salon confidentiel",
+                        description=f"{author.mention} a envoyé une image dans {message.channel.mention}.",
+                        color=discord.Color.orange(),
+                        timestamp=datetime.utcnow()
+                    )
+                    e_screen.add_field(name="👤 Membre",  value=f"{author} (`{author.id}`)", inline=True)
+                    e_screen.add_field(name="📌 Salon",   value=message.channel.mention, inline=True)
+                    e_screen.add_field(name="📎 Fichier", value=att.filename, inline=True)
+                    e_screen.set_image(url=att.proxy_url)
+                    e_screen.set_footer(text="Kozakura Security • Anti-Screenshot")
+                    await log_security(guild, e_screen)
+                    sec_ch = discord.utils.find(
+                        lambda c: any(n in c.name.lower() for n in SECURITY_LOG_NAMES), guild.text_channels
+                    )
+                    if sec_ch:
+                        await sec_ch.send(content=f"📸 {mention_staff} — Image dans salon confidentiel !", embed=e_screen)
+                    break
 
     # ── Anti-mentions massives — DÉSACTIVÉ ───────────────────────────────────
     pass
@@ -690,7 +751,31 @@ async def on_message(message):
     if not content_clean:
         content_clean = "Bonjour !"
 
-    ai_conversations[uid].append({"role": "user", "content": f"{author.display_name}: {content_clean}"})
+    # ── Mémoriser le pseudo préféré ──────────────────────────────────────────
+    import re as _re
+    _name_match = _re.search(
+        r"(?:appelle[- ]moi|mon (?:prénom|pseudo|nom) (?:est|c'est)|je m'appelle)\s+([A-Za-zÀ-ÿ0-9_\-]{2,20})",
+        content_clean, _re.IGNORECASE
+    )
+    if _name_match:
+        preferred = _name_match.group(1).strip()
+        user_prefs_db.setdefault(uid, {})["preferred_name"] = preferred
+        save_json("user_prefs.json", user_prefs_db)
+
+    # Utiliser le pseudo préféré s'il existe
+    display_name = user_prefs_db.get(uid, {}).get("preferred_name", author.display_name)
+
+    # ── Détection NSFW dans message IA — réponse éducative ──────────────────
+    if any(p in content_clean.lower() for p in NSFW_AI_PATTERNS):
+        nsfw_reply = (
+            f"🌸 {author.mention}, je suis Kozakura et ce type de demande n'est pas approprié ici. "
+            f"Ce serveur est un espace respectueux — tout contenu sexuel ou harcèlement est strictement interdit. "
+            f"Merci de respecter les règles de la communauté. ⛩️"
+        )
+        await message.reply(nsfw_reply)
+        return
+
+    ai_conversations[uid].append({"role": "user", "content": f"{display_name}: {content_clean}"})
 
     # Garder seulement les N derniers messages
     if len(ai_conversations[uid]) > AI_MAX_HISTORY:
@@ -1402,11 +1487,14 @@ async def addbanword(ctx, word: str):
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def addnsfw(ctx, *, phrase: str):
-    """!addnsfw [phrase] — Ajoute une phrase/mot à la liste NSFW"""
+    """!addnsfw [phrase] — Ajoute une phrase/mot à la liste NSFW (persisté)"""
     p = phrase.lower().strip()
     if p in NSFW_WORDS:
         return await ctx.send(f"⚠️ `{p}` est déjà dans la liste NSFW.")
     NSFW_WORDS.append(p)
+    if p not in nsfw_words_db["words"]:
+        nsfw_words_db["words"].append(p)
+        save_json("nsfw_words.json", nsfw_words_db)
     e = discord.Embed(
         title="🔞 Liste NSFW mise à jour",
         description=f"Phrase ajoutée : `{p}`\nTotal : **{len(NSFW_WORDS)} entrées**",
@@ -1423,6 +1511,9 @@ async def removensfw(ctx, *, phrase: str):
     if p not in NSFW_WORDS:
         return await ctx.send(f"❌ `{p}` n'est pas dans la liste NSFW.")
     NSFW_WORDS.remove(p)
+    if p in nsfw_words_db["words"]:
+        nsfw_words_db["words"].remove(p)
+        save_json("nsfw_words.json", nsfw_words_db)
     e = discord.Embed(
         title="🔞 Liste NSFW mise à jour",
         description=f"Phrase retirée : `{p}`\nTotal : **{len(NSFW_WORDS)} entrées**",
@@ -1437,12 +1528,43 @@ async def listnsfw(ctx):
     """!listnsfw — Affiche toutes les phrases NSFW surveillées"""
     if not NSFW_WORDS:
         return await ctx.send("ℹ️ La liste NSFW est vide.")
-    lines = "\n".join(f"`{w}`" for w in NSFW_WORDS)
+    lines = "\n".join(f"`{w}`" for w in sorted(NSFW_WORDS))
     e = discord.Embed(
         title=f"🔞 Liste NSFW ({len(NSFW_WORDS)} entrées)",
         description=lines[:2000],
         color=discord.Color.dark_red(), timestamp=datetime.utcnow()
     )
+    e.set_footer(text=f"Kozakura • {ctx.guild.name}")
+    await ctx.send(embed=e)
+
+@bot.command()
+@commands.has_permissions(kick_members=True)
+async def sanctions(ctx, member: discord.Member):
+    """!sanctions @membre — Voir le niveau de sanction actuel (warns)"""
+    gid = str(ctx.guild.id); uid = str(member.id)
+    warns = warnings_db.get(gid, {}).get(uid, [])
+    count = len(warns)
+    # Niveau de risque
+    if count == 0:   niveau, color = "✅ Aucune infraction", discord.Color.green()
+    elif count == 1: niveau, color = "⚠️ Niveau 1 — Avertissement", discord.Color.yellow()
+    elif count == 2: niveau, color = "🔇 Niveau 2 — Prochain : mute 10min", discord.Color.orange()
+    elif count == 3: niveau, color = "🔇 Niveau 3 — Prochain : mute 1h", discord.Color.orange()
+    elif count == 4: niveau, color = "👟 Niveau 4 — Prochain : kick", discord.Color.red()
+    else:            niveau, color = "🔨 Niveau 5+ — Prochain : BAN", discord.Color.dark_red()
+
+    progression = ["⚠️ Warn", "🔇 Mute 10min", "🔇 Mute 1h", "👟 Kick", "🔨 Ban"]
+    e = discord.Embed(
+        title=f"📊 Niveau de sanction — {member.display_name}",
+        description=f"{niveau}\n\n**Historique progressif :**\n" +
+                    "\n".join(f"{'✅' if i < count else '⬜'} {p}" for i, p in enumerate(progression)),
+        color=color, timestamp=datetime.utcnow()
+    )
+    e.add_field(name="⚠️ Warns actifs", value=f"**{count}** infraction(s)", inline=True)
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.set_footer(text=f"Kozakura Security • {ctx.guild.name}")
+    if warns:
+        last = warns[-1]
+        e.add_field(name="📌 Dernière infraction", value=f"{last['reason'][:80]} — {last['date'][:10]}", inline=False)
     await ctx.send(embed=e)
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2179,16 +2301,24 @@ async def help(ctx, categorie: str = None):
         elif cat == "ia":
             e.title = "🤖 Intelligence Artificielle"
             e.description = "Powered by **Groq • Llama 3** — Mentionne le bot ou écris dans `🧠・ia`"
-            e.add_field(name="@Kozakura [message]",     value="Parle directement au bot n'importe où", inline=False)
-            e.add_field(name="!ai [question]",          value="Pose une question à l'IA", inline=False)
-            e.add_field(name="!imagine [description]",  value="Génère une description visuelle détaillée", inline=False)
-            e.add_field(name="!traduis [langue] [texte]", value="Traduit dans n'importe quelle langue\nEx: `!traduis anglais Bonjour`", inline=False)
+            e.add_field(name="@Kozakura [message]",       value="Parle directement au bot n'importe où", inline=False)
+            e.add_field(name="!ai [question]",            value="Pose une question à l'IA", inline=False)
+            e.add_field(name="!mood",                     value="Analyse l'ambiance des 50 derniers messages du salon 🌸", inline=False)
+            e.add_field(name="!roast [@membre]",          value="Roast drôle et bienveillant basé sur les vraies stats 🔥", inline=False)
+            e.add_field(name="!conseil",                  value="Conseil de vie profond avec style japonais 🌸", inline=False)
+            e.add_field(name="!histoire",                 value="Histoire courte avec des membres aléatoires du serveur 📜", inline=False)
+            e.add_field(name="!imagine [description]",    value="Génère une description visuelle détaillée", inline=False)
+            e.add_field(name="!traduis [langue] [texte]", value="Traduit dans n'importe quelle langue", inline=False)
             e.add_field(name="!moderia @membre [raison]", value="L'IA analyse et propose une sanction (staff)", inline=False)
-            e.add_field(name="!announce [sujet]",       value="Génère une annonce avec confirmation (admin)", inline=False)
-            e.add_field(name="!resume [nb]",            value="Résume les X derniers messages du salon", inline=False)
-            e.add_field(name="!analyse @membre",        value="Analyse le comportement d'un membre", inline=False)
-            e.add_field(name="!clearmemory",            value="Efface ta mémoire de conversation avec l'IA", inline=False)
-            e.add_field(name="🧠 Réponses adaptatives",
+            e.add_field(name="!announce [sujet]",         value="Génère une annonce avec confirmation (admin)", inline=False)
+            e.add_field(name="!resume [nb]",              value="Résume les X derniers messages du salon", inline=False)
+            e.add_field(name="!analyse @membre",          value="Analyse le comportement d'un membre", inline=False)
+            e.add_field(name="!clearmemory",              value="Efface ta mémoire de conversation avec l'IA", inline=False)
+            e.add_field(name="🧠 Mémoire pseudo",
+                value="Dis *\"appelle-moi [prénom]\"* — le bot s'en souvient pour toujours !", inline=False)
+            e.add_field(name="🛡️ Réponse NSFW",
+                value="L'IA répond fermement aux demandes inappropriées en rappelant les règles", inline=False)
+            e.add_field(name="🎭 Réponses adaptatives",
                 value="• **Nouveau** (<7j) → accueillant\n• **Vétéran** (>180j) → familier\n• **Sanctionné** → neutre", inline=False)
 
         elif cat == "stats":
@@ -2231,12 +2361,21 @@ async def help(ctx, categorie: str = None):
 
         elif cat == "securite":
             e.title = "🔒 Sécurité Avancée"
-            e.description = "Système de sécurité complet — Kozakura Security"
+            e.description = "Système de sécurité multicouche — Kozakura Security"
             e.add_field(name="🚨 Anti-Nuke", value="Détection auto si quelqu'un supprime salons/rôles en masse → rôles retirés automatiquement", inline=False)
             e.add_field(name="👤 Comptes suspects", value="Alerte automatique à l'arrivée si compte < 7j ou sans avatar", inline=False)
             e.add_field(name="🔔 Anti-mentions", value="Mute 30min auto si spam de mentions ou @everyone", inline=False)
             e.add_field(name="🎙️ Anti-spam vocal", value="Mute 10min auto si rejoindre/quitter 5x en 30s", inline=False)
             e.add_field(name="🤖 Détection menaces IA", value="Analyse contextuelle des messages menaçants", inline=False)
+            e.add_field(name="🔞 Anti-NSFW / Harcèlement",
+                value="Suppression auto + sanction progressive (warn→mute→kick→ban)\n"
+                      "`!addnsfw` `!removensfw` `!listnsfw` (admin)", inline=False)
+            e.add_field(name="📸 Anti-Screenshot",
+                value="Alerte staff si image envoyée dans un salon confidentiel/staff/privé", inline=False)
+            e.add_field(name="📊 !sanctions @membre",
+                value="Voir le niveau de sanction progressif d'un membre", inline=False)
+            e.add_field(name="⚖️ Sanctions progressives",
+                value="1er warn → rien | 2e → mute 10min | 3e → mute 1h | 4e → kick | 5e → ban", inline=False)
             e.add_field(name="🔒 !lockdown [raison]", value="Verrouille tous les salons immédiatement", inline=False)
             e.add_field(name="🔓 !unlockdown", value="Lève le lockdown", inline=False)
             e.add_field(name="🧊 !freeze @membre", value="Coupe toutes les permissions sans bannir", inline=False)
@@ -4840,6 +4979,114 @@ async def set_ai_channel(ctx, *, arg: str):
     if not channel: return await ctx.send("❌ Salon introuvable.")
     set_cfg(ctx.guild.id, "ai_channel", channel.id)
     await ctx.send(f"✅ Salon IA → {channel.mention}\nLe bot répondra automatiquement dans ce salon.")
+
+@bot.command(name="mood")
+async def mood(ctx):
+    """!mood — L'IA analyse l'ambiance générale des 50 derniers messages"""
+    if not GROQ_API_KEY:
+        return await ctx.send("❌ Clé API Groq non configurée.")
+    async with ctx.typing():
+        messages_raw = []
+        async for msg in ctx.channel.history(limit=50):
+            if not msg.author.bot and msg.content:
+                messages_raw.append(f"{msg.author.display_name}: {msg.content[:100]}")
+        if not messages_raw:
+            return await ctx.send("❌ Pas assez de messages à analyser.")
+        messages_raw.reverse()
+        sample = "\n".join(messages_raw[-30:])
+        prompt = [{"role": "user", "content":
+            f"Analyse l'ambiance générale de cette conversation Discord (serveur: {ctx.guild.name}). "
+            f"Décris en 3-4 phrases l'humeur, le ton, et l'énergie du salon. "
+            f"Utilise des emojis japonais/anime. Sois créatif et expressif.\n\n---\n{sample}"}]
+        response = await call_groq(prompt)
+    e = discord.Embed(
+        title="🌸 Analyse d'Ambiance — Kozakura IA",
+        description=response,
+        color=KOZA_PINK, timestamp=datetime.utcnow()
+    )
+    e.set_footer(text=f"Kozakura IA • {ctx.guild.name} • 50 derniers messages")
+    await ctx.send(embed=e)
+
+@bot.command(name="roast")
+async def roast(ctx, member: discord.Member = None):
+    """!roast @membre — L'IA génère un roast drôle et bienveillant basé sur les stats"""
+    if not GROQ_API_KEY:
+        return await ctx.send("❌ Clé API Groq non configurée.")
+    member = member or ctx.author
+    gid = str(ctx.guild.id); uid = str(member.id)
+    xp   = xp_db.get(gid, {}).get(uid, 0)
+    lvl  = get_level(xp)
+    warns = len(warnings_db.get(gid, {}).get(uid, []))
+    joined_days = (datetime.utcnow() - member.joined_at.replace(tzinfo=None)).days if member.joined_at else 0
+    roles_count = len([r for r in member.roles if r.name != "@everyone"])
+    bal = get_balance(gid, uid)
+    async with ctx.typing():
+        prompt = [{"role": "user", "content":
+            f"Génère un roast DRÔLE, BIENVEILLANT et CRÉATIF de {member.display_name} "
+            f"en utilisant CES VRAIES STATS : "
+            f"Niveau XP: {lvl}, XP total: {xp}, "
+            f"Membre depuis: {joined_days} jours, "
+            f"Avertissements: {warns}, "
+            f"Sakuras: {bal} 🌸, "
+            f"Nombre de rôles: {roles_count}. "
+            f"Style anime/japonais, max 150 mots, avec emojis. "
+            f"C'est pour rire, reste gentil et créatif !"}]
+        response = await call_groq(prompt)
+    e = discord.Embed(
+        title=f"🔥 Roast de {member.display_name}",
+        description=response,
+        color=KOZA_DARK, timestamp=datetime.utcnow()
+    )
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.set_footer(text=f"Kozakura IA • {ctx.guild.name} • C'est pour rire !")
+    await ctx.send(embed=e)
+
+@bot.command(name="conseil")
+async def conseil(ctx):
+    """!conseil — L'IA donne un conseil de vie profond"""
+    if not GROQ_API_KEY:
+        return await ctx.send("❌ Clé API Groq non configurée.")
+    async with ctx.typing():
+        prompt = [{"role": "user", "content":
+            "Donne un conseil de vie profond, inspirant et original. "
+            "Style poétique avec des métaphores japonaises/anime (cerisiers, samouraïs, katana, etc.). "
+            "Max 100 mots. Termine par un emoji japonais."}]
+        response = await call_groq(prompt)
+    e = discord.Embed(
+        title="🌸 Conseil de Kozakura",
+        description=f"*{response}*",
+        color=KOZA_PINK, timestamp=datetime.utcnow()
+    )
+    e.set_footer(text=f"Kozakura IA • {ctx.guild.name}")
+    await ctx.send(embed=e)
+
+@bot.command(name="histoire")
+async def histoire(ctx):
+    """!histoire — L'IA génère une courte histoire avec des membres du serveur"""
+    if not GROQ_API_KEY:
+        return await ctx.send("❌ Clé API Groq non configurée.")
+    import random
+    # Prendre 3-5 membres aléatoires du serveur (non-bots)
+    members_sample = random.sample(
+        [m for m in ctx.guild.members if not m.bot],
+        min(4, len([m for m in ctx.guild.members if not m.bot]))
+    )
+    names = ", ".join(m.display_name for m in members_sample)
+    async with ctx.typing():
+        prompt = [{"role": "user", "content":
+            f"Écris une COURTE histoire originale et drôle (max 200 mots) "
+            f"dans un univers anime/japonais (ninjas, samouraïs, magie, Japon féodal...) "
+            f"en incluant CES vrais membres du serveur '{ctx.guild.name}' : {names}. "
+            f"L'histoire doit être positive, créative et amusante. Utilise des emojis."}]
+        response = await call_groq(prompt)
+    e = discord.Embed(
+        title="📜 Histoire de Kozakura",
+        description=response,
+        color=KOZA_PINK, timestamp=datetime.utcnow()
+    )
+    e.add_field(name="🎭 Héros de l'histoire", value=", ".join(m.mention for m in members_sample), inline=False)
+    e.set_footer(text=f"Kozakura IA • {ctx.guild.name}")
+    await ctx.send(embed=e)
 
 # ─── RÉSUMÉ AUTOMATIQUE À LA FERMETURE DES TICKETS ───────────────────────────
 async def ai_summarize_ticket(guild, channel, ticket_data):
