@@ -128,6 +128,25 @@ message_tracker  = defaultdict(list)
 raid_tracker     = []
 xp_cooldowns     = {}
 BANNED_WORDS     = ["badword1", "badword2"]
+NSFW_WORDS       = [
+    # Demandes explicites de contenu sexuel / nudes
+    "envoie des nudes", "envoie tes nudes", "envoie moi tes nudes",
+    "montre tes seins", "montre ta bite", "montre ton cul",
+    "t'as des nudes", "tu as des nudes", "tes nudes",
+    "send nudes", "send pics", "nude stp", "nude svp",
+    "photo intime", "photos intimes", "video intime",
+    # Harcèlement sexuel
+    "suce moi", "lèche moi", "lache moi", "baise moi",
+    "viens baiser", "on baise", "tu veux baiser",
+    "je veux te baiser", "je vais te niquer",
+    "tu veux sucer", "tu veux te faire",
+    # Demandes inappropriées générales
+    "cam privée", "cam privee", "cam sex", "snap privé",
+    "echange photo", "échange photo", "echange snap",
+    "montre toi nue", "montre toi nu",
+    "t'es chaude", "t as chaud", "t'es bonne",
+    "sextape", "sex tape",
+]
 SUSPICIOUS_LINKS = ["bit.ly", "free-nitro", "discord-gift", "steamcommunity.ru", "discordnitro", "nitro-gift", "free-steam"]
 XP_PER_MSG       = 10
 XP_COOLDOWN      = 60
@@ -443,6 +462,58 @@ async def on_message(message):
                 e2.add_field(name="Message", value=f"||{message.content[:200]}||")
                 await staff_ch.send(embed=e2)
             await message.channel.send(f"{author.mention} ce mot est interdit.", delete_after=5)
+            return
+
+    # ── Détection NSFW / harcèlement sexuel ──────────────────────────────────
+    for phrase in NSFW_WORDS:
+        if phrase in low:
+            # Supprimer le message
+            try:
+                await message.delete()
+            except Exception:
+                pass
+
+            # Mute 1h via timeout Discord
+            until = datetime.utcnow() + timedelta(hours=1)
+            try:
+                await author.timeout(until, reason="[Auto-mod] Contenu NSFW / harcèlement sexuel détecté")
+            except Exception:
+                pass
+
+            # Alerte dans logs-securite avec mention Gestion Abus
+            abus_role = discord.utils.get(guild.roles, name=ROLE_GESTION_ABUS)
+            mention_abus = abus_role.mention if abus_role else "**@Gestion Abus**"
+
+            e_nsfw = discord.Embed(
+                title="🔞 CONTENU NSFW / HARCÈLEMENT DÉTECTÉ",
+                description=(
+                    f"{author.mention} a envoyé un message à caractère sexuel ou de harcèlement "
+                    f"dans {message.channel.mention}.\n\n"
+                    f"**Action automatique :** Mute 1h appliqué."
+                ),
+                color=discord.Color.dark_red(),
+                timestamp=datetime.utcnow()
+            )
+            e_nsfw.add_field(name="👤 Membre", value=f"{author} (`{author.id}`)", inline=True)
+            e_nsfw.add_field(name="📌 Salon", value=message.channel.mention, inline=True)
+            e_nsfw.add_field(name="🔑 Déclencheur", value=f"`{phrase}`", inline=True)
+            e_nsfw.add_field(name="💬 Contenu supprimé", value=f"||{message.content[:400]}||", inline=False)
+            e_nsfw.set_thumbnail(url=author.display_avatar.url)
+            e_nsfw.set_footer(text="Kozakura Auto-Mod • NSFW Protection")
+
+            sec_ch = discord.utils.find(
+                lambda c: any(n in c.name.lower() for n in SECURITY_LOG_NAMES),
+                guild.text_channels
+            )
+            if sec_ch:
+                await sec_ch.send(content=f"🚨 {mention_abus} — Contenu NSFW détecté !", embed=e_nsfw)
+            else:
+                await log_security(guild, e_nsfw)
+
+            await message.channel.send(
+                f"{author.mention} ⛔ Message supprimé — contenu inapproprié. Tu es mute 1h.",
+                delete_after=8
+            )
             return
 
     # ── Anti-mentions massives — DÉSACTIVÉ ───────────────────────────────────
@@ -1325,6 +1396,52 @@ async def setinvite(ctx, link: str):
 async def addbanword(ctx, word: str):
     BANNED_WORDS.append(word.lower())
     await ctx.send(f"✅ Mot `{word}` ajouté à la liste noire.")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def addnsfw(ctx, *, phrase: str):
+    """!addnsfw [phrase] — Ajoute une phrase/mot à la liste NSFW"""
+    p = phrase.lower().strip()
+    if p in NSFW_WORDS:
+        return await ctx.send(f"⚠️ `{p}` est déjà dans la liste NSFW.")
+    NSFW_WORDS.append(p)
+    e = discord.Embed(
+        title="🔞 Liste NSFW mise à jour",
+        description=f"Phrase ajoutée : `{p}`\nTotal : **{len(NSFW_WORDS)} entrées**",
+        color=discord.Color.dark_red(), timestamp=datetime.utcnow()
+    )
+    e.set_footer(text=f"Par {ctx.author}")
+    await ctx.send(embed=e)
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def removensfw(ctx, *, phrase: str):
+    """!removensfw [phrase] — Retire une phrase/mot de la liste NSFW"""
+    p = phrase.lower().strip()
+    if p not in NSFW_WORDS:
+        return await ctx.send(f"❌ `{p}` n'est pas dans la liste NSFW.")
+    NSFW_WORDS.remove(p)
+    e = discord.Embed(
+        title="🔞 Liste NSFW mise à jour",
+        description=f"Phrase retirée : `{p}`\nTotal : **{len(NSFW_WORDS)} entrées**",
+        color=discord.Color.orange(), timestamp=datetime.utcnow()
+    )
+    e.set_footer(text=f"Par {ctx.author}")
+    await ctx.send(embed=e)
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def listnsfw(ctx):
+    """!listnsfw — Affiche toutes les phrases NSFW surveillées"""
+    if not NSFW_WORDS:
+        return await ctx.send("ℹ️ La liste NSFW est vide.")
+    lines = "\n".join(f"`{w}`" for w in NSFW_WORDS)
+    e = discord.Embed(
+        title=f"🔞 Liste NSFW ({len(NSFW_WORDS)} entrées)",
+        description=lines[:2000],
+        color=discord.Color.dark_red(), timestamp=datetime.utcnow()
+    )
+    await ctx.send(embed=e)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 🎫 SYSTÈME DE TICKETS AVANCÉ — 4 CATÉGORIES
