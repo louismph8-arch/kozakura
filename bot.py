@@ -1472,6 +1472,7 @@ TICKET_TYPES = {
         "emoji": "👑",
         "color": discord.Color.gold(),
         "role":  ROLE_COD,
+        "role_id": ROLE_COD_ID,
         "description": "Pour contacter la direction. Décalages, fusions, fournisseurs...",
         "style": discord.ButtonStyle.grey,
     },
@@ -1479,7 +1480,8 @@ TICKET_TYPES = {
         "label": "🤝 Contacter Partenariat",
         "emoji": "🤝",
         "color": discord.Color.green(),
-        "role":  ROLE_COD,   # Partenariat géré uniquement par C.O.D
+        "role":  ROLE_COD,
+        "role_id": ROLE_COD_ID,
         "description": "Pour proposer un partenariat avec le serveur.",
         "style": discord.ButtonStyle.green,
     },
@@ -1518,7 +1520,8 @@ def get_ticket_overwrites(guild, author, ticket_type: str):
     # Ajouter le rôle spécifique (sauf partenariat qui est géré uniquement par C.O.D)
     if ticket_type != "partenariat":
         cfg = TICKET_TYPES[ticket_type]
-        role = discord.utils.get(guild.roles, name=cfg["role"])
+        _rid = cfg.get("role_id")
+        role = guild.get_role(_rid) if _rid else discord.utils.get(guild.roles, name=cfg["role"])
         if role and role != cod_role:
             overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
 
@@ -1636,9 +1639,9 @@ async def open_ticket(interaction: discord.Interaction, ticket_type: str):
     save_json("tickets.json", tickets_db)
 
     # Mention du rôle concerné
-    role_name = cfg["role"]
-    role      = discord.utils.get(guild.roles, name=role_name)
-    role_mention = role.mention if role else f"@{role_name}"
+    role_id   = cfg.get("role_id")
+    role      = guild.get_role(role_id) if role_id else discord.utils.get(guild.roles, name=cfg["role"])
+    role_mention = role.mention if role else f"@{cfg['role']}"
 
     e = discord.Embed(
         title=f"{cfg['emoji']} Ticket {ticket_type.capitalize()} #{ticket_number}",
