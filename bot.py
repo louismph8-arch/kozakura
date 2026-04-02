@@ -124,6 +124,8 @@ reaction_roles = load_json("reaction_roles.json", {})
 tickets_db     = load_json("tickets.json", {})
 nsfw_words_db  = load_json("nsfw_words.json", {"words": []})
 user_prefs_db  = load_json("user_prefs.json", {})   # pseudo préféré IA
+banned_db      = load_json("banned_members.json", {})  # historique bannis
+autotrad_db    = load_json("autotrad.json", {})     # {guild_id: {channel_id: bool}}
 
 # ─── VARIABLES EN MÉMOIRE ─────────────────────────────────────────────────────
 message_tracker  = defaultdict(list)
@@ -159,6 +161,35 @@ NSFW_AI_PATTERNS = [
 
 # Salons "confidentiels" — alert si image envoyée
 PRIVATE_CHANNEL_KEYWORDS = ["privé", "prive", "confidentiel", "staff", "admin", "direction", "secret"]
+
+# ── Anti-copypasta multi-salons ───────────────────────────────────────────────
+# {uid: [(content, channel_id, timestamp), ...]}
+copypasta_tracker: dict = defaultdict(list)
+COPYPASTA_WINDOW   = 30   # secondes
+COPYPASTA_CHANNELS = 3    # salons différents
+COPYPASTA_RATIO    = 0.80 # similarité minimum
+
+# ── Liens raccourcis suspects (étendu) ───────────────────────────────────────
+SHORT_LINKS = [
+    "bit.ly", "tinyurl.com", "t.co", "ow.ly", "short.io",
+    "rebrand.ly", "cutt.ly", "tiny.cc", "is.gd", "buff.ly",
+    "adf.ly",
+]
+# linktr.ee autorisé si staff, bloqué sinon
+SHORT_LINKS_STRICT = SHORT_LINKS + ["linktr.ee"]
+
+# ── Mots-clés détresse psychologique ─────────────────────────────────────────
+DISTRESS_WORDS = [
+    "je veux mourir", "envie de mourir", "je vais mourir",
+    "je suis déprimé", "je suis dépressive", "trop déprimé",
+    "plus envie de rien", "plus envie de vivre",
+    "personne m'aime", "personne ne m'aime", "tout le monde s'en fout de moi",
+    "je vais me suicider", "je veux me suicider", "penser au suicide",
+    "j'en peux plus", "j en peux plus", "j'en peux vraiment plus",
+    "la vie vaut pas la peine", "à quoi ça sert de vivre",
+    "personne ne me comprend", "je suis seul au monde",
+    "je me sens inutile", "je veux disparaître",
+]
 SUSPICIOUS_LINKS = ["bit.ly", "free-nitro", "discord-gift", "steamcommunity.ru", "discordnitro", "nitro-gift", "free-steam"]
 XP_PER_MSG       = 10
 XP_COOLDOWN      = 60
@@ -381,6 +412,74 @@ async def on_member_join(member):
         e_sus.set_footer(text="Surveillez ce membre • Kozakura Security")
         await log_security(guild, e_sus)
 
+    # ── Détection retour d'un banni (nouveau compte) ──────────────────────────
+    import difflib as _dl
+    gid_j = str(guild.id)
+    banned_list = banned_db.get(gid_j, {})
+    new_name = member.name.lower()
+    new_disp = member.display_name.lower()
+    new_avatar = str(member.avatar) if member.avatar else None
+
+    best_match_uid  = None
+    best_match_data = None
+    best_ratio      = 0.0
+
+    for banned_uid, bdata in banned_list.items():
+        if str(member.id) == banned_uid:
+            continue  # même compte, déjà géré par Discord
+        b_name = bdata.get("name", "").lower()
+        b_disp = bdata.get("display_name", "").lower()
+        b_avatar = bdata.get("avatar")
+
+        # Similarité nom + display_name
+        r1 = _dl.SequenceMatcher(None, new_name, b_name).ratio()
+        r2 = _dl.SequenceMatcher(None, new_disp, b_disp).ratio()
+        r_avatar = 1.0 if (new_avatar and b_avatar and new_avatar == b_avatar) else 0.0
+        combined = max(r1, r2, r_avatar)
+
+        if combined > best_ratio:
+            best_ratio = combined
+            best_match_uid = banned_uid
+            best_match_data = bdata
+
+    if best_ratio >= 0.80 and best_match_data:
+        gestion_role = discord.utils.get(guild.roles, name=ROLE_GESTION_STAFF)
+        mention_staff = gestion_role.mention if gestion_role else "**@Gestion**"
+
+        # Freeze automatique
+        if member.id not in frozen_members:
+            frozen_members[member.id] = {}
+            for channel in guild.channels:
+                try:
+                    ow = channel.overwrites_for(member)
+                    frozen_members[member.id][channel.id] = ow.pair()
+                    await channel.set_permissions(member,
+                        send_messages=False, read_messages=False,
+                        connect=False, speak=False,
+                        reason="🚨 Retour possible d'un banni — freeze auto")
+                except Exception: pass
+
+        e_ban_ret = discord.Embed(
+            title="🚨 RETOUR DE BANNI POTENTIEL",
+            description=(
+                f"{member.mention} vient de rejoindre et ressemble à un membre banni.\n\n"
+                f"**Freeze automatique appliqué.**"
+            ),
+            color=discord.Color.dark_red(), timestamp=datetime.utcnow()
+        )
+        e_ban_ret.add_field(name="👤 Nouveau membre",   value=f"{member} (`{member.id}`)", inline=True)
+        e_ban_ret.add_field(name="🔨 Membre banni",     value=f"{best_match_data.get('name')} (`{best_match_uid}`)", inline=True)
+        e_ban_ret.add_field(name="📊 Similarité",       value=f"**{best_ratio*100:.0f}%**", inline=True)
+        e_ban_ret.add_field(name="📅 Banni le",         value=best_match_data.get('banned_at', '?')[:10], inline=True)
+        e_ban_ret.set_thumbnail(url=member.display_avatar.url)
+        e_ban_ret.set_footer(text="Kozakura Security • Vérification manuelle recommandée")
+        await log_security(guild, e_ban_ret)
+        sec_ch = discord.utils.find(
+            lambda c: any(n in c.name.lower() for n in SECURITY_LOG_NAMES), guild.text_channels
+        )
+        if sec_ch:
+            await sec_ch.send(content=f"🚨 {mention_staff} — Retour de banni potentiel, freeze appliqué !", embed=e_ban_ret)
+
     # Captcha humain désactivé
 
     raid_tracker.append(now)
@@ -579,6 +678,64 @@ async def on_message(message):
                         await sec_ch.send(content=f"📸 {mention_staff} — Image dans salon confidentiel !", embed=e_screen)
                     break
 
+    # ── Anti-copypasta multi-salons ──────────────────────────────────────────
+    if not has_sanction_role(author, ROLES_BAN) and message.content and len(message.content) > 10:
+        import difflib
+        now_cp = time.time()
+        uid_cp = str(author.id)
+        copypasta_tracker[uid_cp].append((message.content, message.channel.id, now_cp))
+        # Garder seulement les 10 derniers dans la fenêtre
+        copypasta_tracker[uid_cp] = [
+            (c, ch, t) for c, ch, t in copypasta_tracker[uid_cp]
+            if now_cp - t <= COPYPASTA_WINDOW
+        ][-10:]
+
+        recent = copypasta_tracker[uid_cp]
+        if len(recent) >= COPYPASTA_CHANNELS:
+            # Compter les channels uniques avec message similaire
+            unique_channels_match = {}
+            for c, ch, t in recent:
+                ratio = difflib.SequenceMatcher(None, message.content.lower(), c.lower()).ratio()
+                if ratio >= COPYPASTA_RATIO:
+                    unique_channels_match[ch] = True
+            if len(unique_channels_match) >= COPYPASTA_CHANNELS:
+                # Supprimer tous les messages similaires récents
+                for c, ch_id, t in recent:
+                    try:
+                        ch_obj = guild.get_channel(ch_id)
+                        if ch_obj:
+                            async for m in ch_obj.history(limit=20):
+                                if m.author.id == author.id:
+                                    ratio = difflib.SequenceMatcher(None, message.content.lower(), m.content.lower()).ratio()
+                                    if ratio >= COPYPASTA_RATIO:
+                                        try: await m.delete()
+                                        except Exception: pass
+                                        break
+                    except Exception: pass
+                copypasta_tracker[uid_cp] = []
+
+                # Mute 30min
+                until_cp = datetime.utcnow() + timedelta(minutes=30)
+                try: await author.timeout(until_cp, reason="[Auto-mod] Copypasta multi-salons")
+                except Exception: pass
+
+                e_cp = discord.Embed(
+                    title="📋 COPYPASTA MULTI-SALONS DÉTECTÉ",
+                    description=f"{author.mention} a envoyé le même message dans **{len(unique_channels_match)} salons** en {COPYPASTA_WINDOW}s.",
+                    color=discord.Color.dark_orange(), timestamp=datetime.utcnow()
+                )
+                e_cp.add_field(name="👤 Membre",  value=f"{author} (`{author.id}`)", inline=True)
+                e_cp.add_field(name="⏱️ Fenêtre", value=f"{COPYPASTA_WINDOW}s", inline=True)
+                e_cp.add_field(name="🔇 Action",  value="Mute 30 minutes", inline=True)
+                e_cp.add_field(name="💬 Message", value=f"||{message.content[:300]}||", inline=False)
+                e_cp.set_thumbnail(url=author.display_avatar.url)
+                e_cp.set_footer(text="Kozakura Anti-Spam • Copypasta Protection")
+                await log_security(guild, e_cp)
+                await message.channel.send(
+                    f"{author.mention} ⛔ Spam multi-salons détecté — mute 30 min.", delete_after=8
+                )
+                return
+
     # ── Anti-mentions massives — DÉSACTIVÉ ───────────────────────────────────
     pass
 
@@ -619,18 +776,44 @@ async def on_message(message):
     )
 
     for url in re.findall(r'https?://\S+|discord\.gg/\S+|discord\.com/invite/\S+', message.content, re.IGNORECASE):
-        is_suspicious = any(d in url.lower() for d in SUSPICIOUS_LINKS)
-        is_discord_invite = any(x in url.lower() for x in [
+        url_low = url.lower()
+        is_suspicious    = any(d in url_low for d in SUSPICIOUS_LINKS)
+        is_short_link    = any(d in url_low for d in SHORT_LINKS_STRICT) and not has_sanction_role(author, ROLES_BAN)
+        is_discord_invite = any(x in url_low for x in [
             "discord.gg/", "discord.com/invite/", "discordapp.com/invite/"
         ])
-        # Ignorer les liens discord.com normaux (pas des invites)
-        if not is_suspicious and not is_discord_invite:
+        if not is_suspicious and not is_short_link and not is_discord_invite:
             continue
-        if (is_suspicious or is_discord_invite) and not is_link_allowed:
-            try:
-                await message.delete()
-            except Exception:
-                pass  # Ignoré intentionnellement
+        if not is_link_allowed:
+            try: await message.delete()
+            except Exception: pass
+
+            if is_short_link and not is_suspicious and not is_discord_invite:
+                # Warn progressif pour liens raccourcis
+                gid_l = str(guild.id); uid_l = str(author.id)
+                warnings_db.setdefault(gid_l, {}).setdefault(uid_l, []).append(
+                    {"reason": f"[Auto-mod] Lien raccourci : {url[:80]}", "by": "bot", "date": str(datetime.utcnow())}
+                )
+                save_json("warnings.json", warnings_db)
+                warn_c = len(warnings_db[gid_l][uid_l])
+                e_short = discord.Embed(
+                    title="🔗 Lien Raccourci Détecté",
+                    description=f"{author.mention} a envoyé un lien raccourci interdit.",
+                    color=discord.Color.orange(), timestamp=datetime.utcnow()
+                )
+                e_short.add_field(name="URL",    value=f"||{url[:200]}||", inline=False)
+                e_short.add_field(name="Membre", value=f"{author} (`{author.id}`)", inline=True)
+                e_short.add_field(name="Warns",  value=f"**{warn_c}**", inline=True)
+                await log_security(guild, e_short)
+                if warn_c >= 2:
+                    until_s = datetime.utcnow() + timedelta(hours=1)
+                    try: await author.timeout(until_s, reason="[Auto-mod] Lien raccourci — 2ème infraction")
+                    except Exception: pass
+                    await message.channel.send(f"{author.mention} ⛔ Lien raccourci interdit — mute 1h (2ème infraction).", delete_after=8)
+                else:
+                    await message.channel.send(f"{author.mention} ⚠️ Les liens raccourcis sont interdits ici. ({warn_c}/2 avant mute)", delete_after=6)
+                return
+
             label = "Invitation Discord" if is_discord_invite else "Lien Suspect"
             e = discord.Embed(
                 title=f"🔗 {label} Supprimé",
@@ -640,18 +823,93 @@ async def on_message(message):
             e.add_field(name="URL", value=f"||{url[:200]}||")
             await log(guild, e)
             await message.channel.send(
-                f"{author.mention} les liens/invitations sont interdits ici. 🔗",
-                delete_after=5
+                f"{author.mention} les liens/invitations sont interdits ici. 🔗", delete_after=5
             )
-            # Mute automatique 5 minutes — seulement si pas staff
             if not has_sanction_role(author, ROLES_BAN + ROLES_MUTE):
                 try:
                     until = discord.utils.utcnow() + timedelta(minutes=5)
                     await author.timeout(until, reason=f"[Auto-mod] Lien interdit : {url[:100]}")
-                    await log_sanction(guild, author, "Mute", f"[Auto-mod] Lien interdit", bot.user or author, extra="5 minutes • Lien/Invitation Discord")
-                except Exception:
-                    pass  # Ignoré intentionnellement
+                    await log_sanction(guild, author, "Mute", "[Auto-mod] Lien interdit", bot.user or author, extra="5 minutes • Lien/Invitation Discord")
+                except Exception: pass
             return
+
+    # ── Détection détresse / idées suicidaires ────────────────────────────────
+    msg_low_full = message.content.lower()
+    if any(kw in msg_low_full for kw in DISTRESS_WORDS):
+        # Alerte discrète staff (sans contenu exact)
+        gestion_role = discord.utils.get(guild.roles, name=ROLE_GESTION_STAFF)
+        mention_staff = gestion_role.mention if gestion_role else "**@Gestion**"
+        e_distress = discord.Embed(
+            title="💙 Alerte Bien-être Membre",
+            description=(
+                f"{author.mention} semble traverser une période difficile dans {message.channel.mention}.\n\n"
+                f"🌸 **Aucune sanction n'a été appliquée.** Intervention humaine recommandée."
+            ),
+            color=discord.Color.blue(), timestamp=datetime.utcnow()
+        )
+        e_distress.add_field(name="👤 Membre", value=f"{author} (`{author.id}`)", inline=True)
+        e_distress.add_field(name="📌 Salon",  value=message.channel.mention, inline=True)
+        e_distress.set_thumbnail(url=author.display_avatar.url)
+        e_distress.set_footer(text="Kozakura Bien-être • Confidentiel — ne pas diffuser")
+        await log_security(guild, e_distress)
+        sec_ch = discord.utils.find(
+            lambda c: any(n in c.name.lower() for n in SECURITY_LOG_NAMES), guild.text_channels
+        )
+        if sec_ch:
+            await sec_ch.send(content=f"💙 {mention_staff} — Alerte bien-être, intervention discrète recommandée.", embed=e_distress)
+        # MP chaleureux via IA
+        if GROQ_API_KEY:
+            support_prompt = [{
+                "role": "user",
+                "content": (
+                    f"Un membre du serveur Discord '{guild.name}' semble aller très mal. "
+                    f"Écris un message de soutien TRÈS chaleureux, bienveillant et humain (max 120 mots). "
+                    f"Rappelle-lui qu'il n'est pas seul, que des ressources existent (ex: numéro national prévention suicide 3114 en France). "
+                    f"Ton style : doux, empathique, jamais condescendant. Pas d'emojis excessifs."
+                )
+            }]
+            support_msg = await call_groq(support_prompt)
+            try:
+                e_dm = discord.Embed(
+                    title=f"🌸 Kozakura te parle — {guild.name}",
+                    description=support_msg,
+                    color=discord.Color.blue(), timestamp=datetime.utcnow()
+                )
+                e_dm.set_footer(text="🌸 Tu n'es pas seul·e. Numéro national : 3114")
+                await author.send(embed=e_dm)
+            except Exception: pass
+
+    # ── Traduction automatique ────────────────────────────────────────────────
+    if (
+        GROQ_API_KEY
+        and len(message.content.split()) >= 5
+        and not str(message.channel.id) in tickets_db.get(str(guild.id), {})
+        and autotrad_db.get(str(guild.id), {}).get(str(message.channel.id), False)
+    ):
+        detect_prompt = [{
+            "role": "user",
+            "content": (
+                f"Ce message est-il en français ? Réponds UNIQUEMENT par 'oui' ou par la langue détectée + traduction.\n"
+                f"Format si non-français : 'LANGUE: [langue] | TRADUCTION: [traduction en français]'\n"
+                f"Message : {message.content[:300]}"
+            )
+        }]
+        try:
+            trad_response = await call_groq(detect_prompt)
+            if trad_response and not trad_response.lower().startswith("oui"):
+                # Parser la réponse
+                if "TRADUCTION:" in trad_response:
+                    parts = trad_response.split("|")
+                    lang_part = parts[0].replace("LANGUE:", "").strip() if len(parts) > 0 else "?"
+                    trad_part = parts[1].replace("TRADUCTION:", "").strip() if len(parts) > 1 else trad_response
+                    e_trad = discord.Embed(
+                        description=f"🌐 **Traduction** ({lang_part} → français) : *{trad_part}*",
+                        color=0x2B2D31
+                    )
+                    e_trad.set_footer(text="Kozakura Traduction automatique • !setautotrad off pour désactiver")
+                    await message.reply(embed=e_trad, mention_author=False)
+        except Exception: pass
+
     last = xp_cooldowns.get(uid, 0)
     if now - last > XP_COOLDOWN:
         xp_cooldowns[uid] = now
@@ -2362,23 +2620,22 @@ async def help(ctx, categorie: str = None):
         elif cat == "securite":
             e.title = "🔒 Sécurité Avancée"
             e.description = "Système de sécurité multicouche — Kozakura Security"
-            e.add_field(name="🚨 Anti-Nuke", value="Détection auto si quelqu'un supprime salons/rôles en masse → rôles retirés automatiquement", inline=False)
-            e.add_field(name="👤 Comptes suspects", value="Alerte automatique à l'arrivée si compte < 7j ou sans avatar", inline=False)
-            e.add_field(name="🔔 Anti-mentions", value="Mute 30min auto si spam de mentions ou @everyone", inline=False)
-            e.add_field(name="🎙️ Anti-spam vocal", value="Mute 10min auto si rejoindre/quitter 5x en 30s", inline=False)
-            e.add_field(name="🤖 Détection menaces IA", value="Analyse contextuelle des messages menaçants", inline=False)
+            e.add_field(name="🚨 Anti-Nuke",           value="Détection auto bans/suppressions massifs → rôles retirés", inline=False)
+            e.add_field(name="👤 Comptes suspects",     value="Alerte si compte < 7j ou sans avatar à l'arrivée", inline=False)
+            e.add_field(name="🔁 Anti-copypasta",       value="Mute 30min si même message dans 3 salons en 30s (staff ignoré)", inline=False)
+            e.add_field(name="🔨 Retour de banni",      value="Détecte les nouveaux comptes similaires aux bannis (80%+) → freeze auto + alerte", inline=False)
+            e.add_field(name="🔗 Anti-liens raccourcis",value="Warn auto (bit.ly, tinyurl, t.co…) — 2ème infraction = mute 1h", inline=False)
+            e.add_field(name="💙 Détection détresse",   value="MP bienveillant IA + alerte discrète staff si mots de détresse détectés", inline=False)
+            e.add_field(name="🌐 Traduction auto",      value="`!setautotrad on/off [#salon]` — Traduit les messages étrangers (≥5 mots)", inline=False)
             e.add_field(name="🔞 Anti-NSFW / Harcèlement",
-                value="Suppression auto + sanction progressive (warn→mute→kick→ban)\n"
+                value="Suppression auto + sanctions progressives (warn→mute→kick→ban)\n"
                       "`!addnsfw` `!removensfw` `!listnsfw` (admin)", inline=False)
-            e.add_field(name="📸 Anti-Screenshot",
-                value="Alerte staff si image envoyée dans un salon confidentiel/staff/privé", inline=False)
-            e.add_field(name="📊 !sanctions @membre",
-                value="Voir le niveau de sanction progressif d'un membre", inline=False)
-            e.add_field(name="⚖️ Sanctions progressives",
-                value="1er warn → rien | 2e → mute 10min | 3e → mute 1h | 4e → kick | 5e → ban", inline=False)
-            e.add_field(name="🔒 !lockdown [raison]", value="Verrouille tous les salons immédiatement", inline=False)
-            e.add_field(name="🔓 !unlockdown", value="Lève le lockdown", inline=False)
-            e.add_field(name="🧊 !freeze @membre", value="Coupe toutes les permissions sans bannir", inline=False)
+            e.add_field(name="📸 Anti-Screenshot",      value="Alerte staff si image dans salon confidentiel/staff/privé", inline=False)
+            e.add_field(name="📊 !sanctions @membre",   value="Niveau de sanction progressif d'un membre", inline=False)
+            e.add_field(name="⚖️ Sanctions progressives", value="1→rien | 2→mute 10min | 3→mute 1h | 4→kick | 5→ban", inline=False)
+            e.add_field(name="🔒 !lockdown [raison]",   value="Verrouille tous les salons immédiatement", inline=False)
+            e.add_field(name="🔓 !unlockdown",          value="Lève le lockdown", inline=False)
+            e.add_field(name="🧊 !freeze @membre",      value="Coupe toutes les permissions sans bannir", inline=False)
 
         elif cat in ("economie", "économie", "eco"):
             e.title = "🌸 Économie — Sakuras"
@@ -3139,7 +3396,19 @@ async def on_guild_role_delete(role):
 
 @bot.event
 async def on_member_ban(guild, user):
-    """Détecte les bans massifs"""
+    """Détecte les bans massifs + sauvegarde les bannis pour détection retour"""
+    # Sauvegarder le banni
+    gid = str(guild.id)
+    banned_db.setdefault(gid, {})[str(user.id)] = {
+        "name":         user.name,
+        "display_name": user.display_name,
+        "discriminator": user.discriminator,
+        "avatar":       str(user.avatar) if user.avatar else None,
+        "banned_at":    str(datetime.utcnow()),
+    }
+    save_json("banned_members.json", banned_db)
+
+    # Anti-nuke : détecter ban massif
     async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.ban):
         if entry.user and not entry.user.bot and entry.user != guild.owner:
             await nuke_action(guild, entry.user, f"Ban de {user}")
@@ -4979,6 +5248,28 @@ async def set_ai_channel(ctx, *, arg: str):
     if not channel: return await ctx.send("❌ Salon introuvable.")
     set_cfg(ctx.guild.id, "ai_channel", channel.id)
     await ctx.send(f"✅ Salon IA → {channel.mention}\nLe bot répondra automatiquement dans ce salon.")
+
+@bot.command(name="setautotrad")
+@commands.has_permissions(administrator=True)
+async def setautotrad(ctx, state: str, channel: discord.TextChannel = None):
+    """!setautotrad on/off [#salon] — Active/désactive la traduction automatique"""
+    ch = channel or ctx.channel
+    gid = str(ctx.guild.id); cid = str(ch.id)
+    state = state.lower().strip()
+    if state not in ("on", "off"):
+        return await ctx.send("❌ Utilise `!setautotrad on` ou `!setautotrad off`.", delete_after=5)
+    enabled = (state == "on")
+    autotrad_db.setdefault(gid, {})[cid] = enabled
+    save_json("autotrad.json", autotrad_db)
+    status = "✅ activée" if enabled else "❌ désactivée"
+    e = discord.Embed(
+        title="🌐 Traduction automatique",
+        description=f"Traduction auto {status} dans {ch.mention}.",
+        color=KOZA_PINK if enabled else discord.Color.dark_grey(),
+        timestamp=datetime.utcnow()
+    )
+    e.set_footer(text=f"Kozakura • {ctx.guild.name}")
+    await ctx.send(embed=e)
 
 @bot.command(name="mood")
 async def mood(ctx):
