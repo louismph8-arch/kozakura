@@ -1,0 +1,5598 @@
+"""
+╔══════════════════════════════════════════════════════════════╗
+║           🤖 BOT DISCORD — MODÉRATION COMPLÈTE              ║
+║     + Système de tickets avancé avec 4 catégories           ║
+╚══════════════════════════════════════════════════════════════╝
+pip install discord.py
+python bot.py
+"""
+
+import discord
+from discord.ext import commands, tasks
+from discord import app_commands
+import json, os, re, time, asyncio, aiohttp
+from datetime import datetime, timedelta
+from collections import defaultdict
+
+# ─── GROQ AI ──────────────────────────────────────────────────────────────────
+GROQ_API_KEY   = "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"
+GROQ_MODEL     = "llama-3.1-8b-instant"
+GROQ_URL       = "https://api.groq.com/openai/v1/chat/completions"
+
+# Historique des conversations par utilisateur {user_id: [messages]}
+ai_conversations = {}
+AI_MAX_HISTORY   = 10  # Messages max gardés en mémoire
+
+# Salons où le bot répond automatiquement (contient ces mots dans le nom)
+AI_AUTO_CHANNELS = ["ia", "ai", "bot", "kozakura", "discussion", "general", "général"]
+
+# Salons où le bot ne répond JAMAIS automatiquement
+AI_IGNORE_CHANNELS = ["sanction", "logs", "ticket", "tribunal", "rank"]
+
+SYSTEM_PROMPT = """Tu es Kozakura, le bot intelligent d'un serveur Discord francophone.
+Tu es serviable, sympathique et tu réponds en français.
+Tu peux aider avec des questions générales, discuter, aider avec du code,
+expliquer des concepts, et modérer intelligemment.
+Tu connais les commandes du bot : !ban, !kick, !mute, !warn, !rank, !help, etc.
+Réponds de manière concise (max 300 mots) et adaptée à Discord.
+Si quelqu'un semble en conflit ou agressif, reste calme et professionnel.
+Ne mentionne jamais que tu es une IA Groq/Llama — tu es Kozakura."""
+
+async def call_groq(messages: list, member_ctx: dict = None) -> str:
+    """Appelle l'API Groq et retourne la réponse"""
+    if not GROQ_API_KEY:
+        return "❌ Clé API Groq non configurée."
+
+    # Système adaptatif selon le profil du membre
+    system = SYSTEM_PROMPT
+    if member_ctx:
+        days   = member_ctx.get("days", 0)
+        level  = member_ctx.get("level", 0)
+        sancs  = member_ctx.get("sanctions", 0)
+        if days < 7:
+            system += "\nCe membre est NOUVEAU sur le serveur (moins de 7 jours). Sois particulièrement accueillant, explique les fonctionnalités de base."
+        elif days > VETERAN_DAYS and level > 10:
+            system += "\nCe membre est un VÉTÉRAN actif du serveur. Tu peux être plus direct et utiliser un ton plus familier."
+        if sancs > 3:
+            system += "\nCe membre a eu des sanctions par le passé. Reste professionnel et neutre."
+
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": [{"role": "system", "content": system}] + messages,
+        "max_tokens": 500,
+        "temperature": 0.7
+    }
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(GROQ_URL, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data["choices"][0]["message"]["content"].strip()
+                else:
+                    return f"❌ Erreur API ({resp.status})"
+    except asyncio.TimeoutError:
+        return "⏰ Délai dépassé, réessaie !"
+    except Exception as e:
+        return f"❌ Erreur : {str(e)[:100]}"
+
+async def detect_conflict(content: str) -> bool:
+    """Détecte si un message est potentiellement conflictuel"""
+    conflict_words = [
+        "je vais te", "ta gueule", "ferme la", "nique", "bâtard",
+        "connard", "salope", "fdp", "va te", "idiot", "stupide",
+        "merde", "enculé", "insulte", "menace"
+    ]
+    low = content.lower()
+    return any(w in low for w in conflict_words)
+
+
+# ─── CONFIGURATION ────────────────────────────────────────────────────────────
+TOKEN  = "MTQ3ODQzOTE3NzMyMTE4OTQ3Nw.GDC1sn.yhwIGbCBcCxEvflU_pA4bKhhws3cF6PXKc8KiU"
+PREFIX = "!"
+
+intents = discord.Intents.all()
+bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None)
+
+# ─── PERSISTANCE JSON ─────────────────────────────────────────────────────────
+DATA_DIR = "data"
+os.makedirs(DATA_DIR, exist_ok=True)
+
+def load_json(name, default=None):
+    if default is None:
+        default = {}
+    p = f"{DATA_DIR}/{name}"
+    if os.path.exists(p):
+        with open(p, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return default
+
+def save_json(name, data):
+    with open(f"{DATA_DIR}/{name}", "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+warnings_db    = load_json("warnings.json", {})
+xp_db          = load_json("xp.json", {})
+config_db      = load_json("config.json", {})
+custom_cmds_db = load_json("custom_commands.json", {})
+reminders_db   = load_json("reminders.json", {})
+reaction_roles = load_json("reaction_roles.json", {})
+tickets_db     = load_json("tickets.json", {})
+
+# ─── VARIABLES EN MÉMOIRE ─────────────────────────────────────────────────────
+message_tracker  = defaultdict(list)
+raid_tracker     = []
+xp_cooldowns     = {}
+BANNED_WORDS     = ["badword1", "badword2"]
+SUSPICIOUS_LINKS = ["bit.ly", "free-nitro", "discord-gift", "steamcommunity.ru", "discordnitro", "nitro-gift", "free-steam"]
+XP_PER_MSG       = 10
+XP_COOLDOWN      = 60
+LEVEL_ROLES      = {5: "Niveau 5", 10: "Niveau 10", 20: "Niveau 20", 50: "Niveau 50"}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🔒 VARIABLES DE SÉCURITÉ AVANCÉE
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Anti-nuke — tracker des actions destructives par membre
+nuke_tracker     = defaultdict(list)  # {user_id: [timestamps]}
+NUKE_THRESHOLD   = 3    # Actions en moins de 10s = nuke détecté
+NUKE_WINDOW      = 10   # Secondes
+
+# Anti-spam vocal
+voice_spam_tracker = defaultdict(list)  # {user_id: [timestamps join/leave]}
+VOICE_SPAM_THRESHOLD = 5  # Rejoindre/quitter 5x en 30s
+
+# Anti-mention massive
+mention_tracker  = defaultdict(list)  # {user_id: [timestamps]}
+MENTION_THRESHOLD = 5   # Mentions en 10s
+
+# Lockdown
+lockdown_active  = {}   # {guild_id: True/False}
+lockdown_backup  = {}   # {channel_id: overwrites sauvegardées}
+
+# Comptes suspects — âge minimum en jours
+ACCOUNT_MIN_AGE_DAYS  = 7    # Âge minimum compte en jours
+VETERAN_DAYS          = 180  # Jours pour être considéré vétéran
+MAX_SANCTIONS_DISPLAY = 10   # Sanctions affichées dans !infosanction
+MAX_XP_LEADERBOARD   = 50   # Entrées dans le leaderboard
+
+# Log sécurité dédié
+SECURITY_LOG_NAMES = ["logs-securite", "logs-security", "log-securite", "security-logs", "logs-bans"]
+
+async def log_security(guild, embed):
+    """Envoie dans le salon de sécurité dédié"""
+    for name in SECURITY_LOG_NAMES:
+        ch = discord.utils.find(lambda c: name in c.name.lower(), guild.text_channels)
+        if ch:
+            await ch.send(embed=embed)
+            return
+    await log(guild, embed)
+
+async def nuke_action(guild, member, action_type: str):
+    """Enregistre une action potentiellement nuisible et alerte si seuil atteint"""
+    now = time.time()
+    uid = str(member.id)
+    nuke_tracker[uid].append(now)
+    nuke_tracker[uid] = [t for t in nuke_tracker[uid] if now - t < NUKE_WINDOW]
+
+    if len(nuke_tracker[uid]) >= NUKE_THRESHOLD:
+        # Retirer toutes les permissions immédiament
+        try:
+            # Retirer tous les rôles dangereux
+            dangerous_perms = ["administrator", "manage_guild", "manage_channels",
+                              "manage_roles", "manage_webhooks", "ban_members", "kick_members"]
+            for role in member.roles:
+                if role.name != "@everyone":
+                    perms = role.permissions
+                    if any(getattr(perms, p, False) for p in dangerous_perms):
+                        try: await member.remove_roles(role, reason="🚨 Anti-nuke automatique")
+                        except Exception: pass
+        except Exception: pass
+
+        e = discord.Embed(
+            title="🚨 ANTI-NUKE DÉCLENCHÉ",
+            description=f"**{member.mention}** a effectué **{len(nuke_tracker[uid])} actions destructives** en {NUKE_WINDOW}s !",
+            color=discord.Color.dark_red(),
+            timestamp=datetime.utcnow()
+        )
+        e.add_field(name="Action détectée", value=action_type)
+        e.add_field(name="Membre", value=f"{member} (`{member.id}`)")
+        e.add_field(name="⚡ Action prise", value="Rôles dangereux retirés automatiquement")
+        e.set_thumbnail(url=member.display_avatar.url)
+        e.set_footer(text="⚠️ Vérifiez le serveur immédiatement !")
+        await log_security(guild, e)
+        nuke_tracker[uid] = []  # Reset
+
+
+# ─── NOMS DES RÔLES TICKETS (à personnaliser selon ton serveur) ───────────────
+# Change ces noms pour qu'ils correspondent EXACTEMENT aux rôles dans ton serveur
+ROLE_GESTION_STAFF  = "⛩️ ⋮ Gestion Staff"
+ROLE_GESTION_ABUS   = "🏮 ⋮ Gestion Abus"
+ROLE_COD            = "Kozakura C.O.D"       # Peut tout voir
+ROLE_PARTENARIAT    = "Partenariat"           # Visible uniquement par C.O.D
+
+# ─── UTILITAIRES ──────────────────────────────────────────────────────────────
+def xp_for_level(lvl): return int(100 * (lvl ** 1.5))
+
+def get_level(xp):
+    lvl = 0
+    while xp >= xp_for_level(lvl + 1): lvl += 1
+    return lvl
+
+def get_cfg(guild_id, key, default=None):
+    return config_db.get(str(guild_id), {}).get(key, default)
+
+def set_cfg(guild_id, key, value):
+    gid = str(guild_id)
+    config_db.setdefault(gid, {})[key] = value
+    save_json("config.json", config_db)
+
+async def log(guild, embed):
+    """Log général (garde pour compatibilité)"""
+    ch_id = get_cfg(guild.id, "log_channel")
+    if ch_id:
+        ch = guild.get_channel(int(ch_id))
+        if not ch:
+            try: ch = await guild.fetch_channel(int(ch_id))
+            except: return
+        if ch: await ch.send(embed=embed)
+
+async def log_to(guild, embed, channel_keywords):
+    """Envoie dans le premier salon dont le nom contient un des keywords"""
+    for kw in channel_keywords:
+        ch = discord.utils.find(lambda c: kw in c.name.lower(), guild.text_channels)
+        if ch:
+            await ch.send(embed=embed)
+            return
+    # Fallback sur le log général
+    await log(guild, embed)
+
+async def log_ban(guild, embed):
+    """Logs sanctions : logs-bans, logs-sanctions"""
+    await log_to(guild, embed, ["logs-bans", "logs-ban", "log-ban", "log-bans", "sanction"])
+
+async def log_message(guild, embed):
+    """Logs messages : logs-messages, logs-message"""
+    await log_to(guild, embed, ["logs-messages", "logs-message", "log-messages", "log-message"])
+
+async def log_photo(guild, embed):
+    """Logs photos/fichiers : log-photos, logs-photos"""
+    await log_to(guild, embed, ["log-photos", "logs-photos", "log-photo", "logs-photo"])
+
+async def log_vocal(guild, embed):
+    """Logs vocaux : log-vocs, logs-vocs"""
+    await log_to(guild, embed, ["log-vocs", "logs-vocs", "log-voc", "logs-voc", "log-vocal"])
+
+async def dm(user, title, desc, color=discord.Color.red()):
+    try:
+        e = discord.Embed(title=title, description=desc, color=color,
+            timestamp=datetime.utcnow())
+        await user.send(embed=e)
+    except Exception: pass
+
+async def resolve_channel(ctx, arg: str):
+    arg = arg.strip()
+    if arg.startswith("<#") and arg.endswith(">"):
+        cid = arg[2:-1]
+        if cid.isdigit():
+            ch = ctx.guild.get_channel(int(cid))
+            if ch: return ch
+            try: return await ctx.guild.fetch_channel(int(cid))
+            except Exception: pass
+    if arg.isdigit():
+        ch = ctx.guild.get_channel(int(arg))
+        if ch: return ch
+        try: return await ctx.guild.fetch_channel(int(arg))
+        except Exception: pass
+    name = arg.lstrip("#").lower()
+    return discord.utils.find(lambda c: c.name.lower() == name, ctx.guild.text_channels)
+
+async def resolve_role(ctx, arg: str):
+    arg = arg.strip()
+    if arg.startswith("<@&") and arg.endswith(">"):
+        rid = arg[3:-1]
+        if rid.isdigit(): return ctx.guild.get_role(int(rid))
+    if arg.isdigit(): return ctx.guild.get_role(int(arg))
+    return discord.utils.find(lambda r: r.name.lower() == arg.lower(), ctx.guild.roles)
+
+# ─── EVENTS ───────────────────────────────────────────────────────────────────
+@bot.event
+async def on_ready():
+    print(f"✅  {bot.user}  connecté !")
+    await bot.change_presence(activity=discord.Activity(
+        type=discord.ActivityType.watching, name=f"le serveur | {PREFIX}help"))
+    check_reminders.start()
+    update_counters.start()
+    rapport_hebdo.start()
+    try:
+        synced = await bot.tree.sync()
+        print(f"⚡ {len(synced)} slash commands synchronisées")
+    except Exception as e: print(e)
+
+@bot.event
+async def on_member_join(member):
+    guild = member.guild; now = time.time()
+
+    # Vérification anti-bot en premier
+    if member.bot:
+        await check_antibot(member)
+        return
+
+    # ── Détection compte suspect ──────────────────────────────────────────────
+    account_age_days = (datetime.utcnow() - member.created_at.replace(tzinfo=None)).days
+    has_avatar = member.avatar is not None
+    suspicious_flags = []
+
+    if account_age_days < ACCOUNT_MIN_AGE_DAYS:
+        suspicious_flags.append(f"⚠️ Compte créé il y a seulement **{account_age_days}j**")
+    if not has_avatar:
+        suspicious_flags.append("⚠️ **Pas d'avatar**")
+    if account_age_days < 1:
+        suspicious_flags.append("🚨 **Compte créé aujourd'hui**")
+
+    if suspicious_flags:
+        e_sus = discord.Embed(
+            title="🔍 Compte Suspect Détecté",
+            description=f"{member.mention} vient de rejoindre le serveur.",
+            color=discord.Color.orange(),
+            timestamp=datetime.utcnow()
+        )
+        e_sus.set_thumbnail(url=member.display_avatar.url)
+        e_sus.add_field(name="⚠️ Indicateurs suspects", value="\n".join(suspicious_flags), inline=False)
+        e_sus.add_field(name="📅 Compte créé le", value=member.created_at.strftime('%d/%m/%Y'), inline=True)
+        e_sus.add_field(name="🆔 ID", value=f"`{member.id}`", inline=True)
+        e_sus.set_footer(text="Surveillez ce membre • Kozakura Security")
+        await log_security(guild, e_sus)
+
+    # Captcha humain désactivé
+
+    raid_tracker.append(now)
+    raid_tracker[:] = [t for t in raid_tracker if now - t < 10]
+    if len(raid_tracker) >= get_cfg(guild.id, "raid_threshold", 10):
+        try:
+            await member.kick(reason="Anti-raid automatique")
+            e = discord.Embed(title="🚨 ANTI-RAID", description=f"{member} expulsé",
+                color=discord.Color.dark_red(), timestamp=datetime.utcnow())
+            await log_security(guild, e)
+        except Exception: pass
+        return
+    ar = get_cfg(guild.id, "auto_role")
+    if ar:
+        role = guild.get_role(int(ar))
+        if role:
+            try: await member.add_roles(role)
+            except Exception: pass
+    wc = get_cfg(guild.id, "welcome_channel")
+    if wc:
+        ch = guild.get_channel(int(wc))
+        if not ch:
+            try: ch = await guild.fetch_channel(int(wc))
+            except: ch = None
+        if ch:
+            msg = get_cfg(guild.id, "welcome_message",
+                "👋 Bienvenue sur **{server}**, {user} ! Tu es le membre n°{count}.")
+            msg = msg.replace("{user}", member.mention).replace("{server}", guild.name)\
+                     .replace("{count}", str(guild.member_count))
+            e = discord.Embed(description=msg, color=discord.Color.green(),
+                timestamp=datetime.utcnow())
+            e.set_thumbnail(url=member.display_avatar.url)
+            await ch.send(embed=e)
+    e = discord.Embed(title="📥 Nouveau membre",
+        description=f"{member.mention}\nCompte créé le {member.created_at.strftime('%d/%m/%Y')}",
+        color=discord.Color.green(), timestamp=datetime.utcnow())
+    e.set_thumbnail(url=member.display_avatar.url)
+    await log(guild, e)
+
+@bot.event
+async def on_member_remove(member):
+    e = discord.Embed(title="📤 Membre parti", description=f"{member.mention} ({member.name})",
+        color=discord.Color.orange(), timestamp=datetime.utcnow())
+    await log(member.guild, e)
+
+@bot.event
+async def on_message(message):
+    if message.author.bot or not message.guild: return
+    guild = message.guild; author = message.author
+    uid = str(author.id); gid = str(guild.id); now = time.time()
+
+    # Log photos/fichiers envoyés
+    if message.attachments:
+        for att in message.attachments:
+            if att.content_type and (att.content_type.startswith("image") or att.content_type.startswith("video")):
+                e_photo = discord.Embed(
+                    title="📸 Média Envoyé",
+                    description=f"Par {author.mention} dans {message.channel.mention}",
+                    color=discord.Color.blurple(), timestamp=datetime.utcnow()
+                )
+                e_photo.add_field(name="Fichier", value=att.filename)
+                e_photo.set_image(url=att.proxy_url)
+                e_photo.set_thumbnail(url=author.display_avatar.url)
+                await log_photo(guild, e_photo)
+
+    message_tracker[uid].append(now)
+    message_tracker[uid] = [t for t in message_tracker[uid] if now - t < 5]
+    if len(message_tracker[uid]) >= 5:
+        await message.delete()
+        if message.channel.slowmode_delay < 10:
+            await message.channel.edit(slowmode_delay=10)
+            e = discord.Embed(title="⏱️ Slowmode Activé",
+                description=f"10s dans {message.channel.mention}",
+                color=discord.Color.orange(), timestamp=datetime.utcnow())
+            await log(guild, e)
+        await message.channel.send(f"{author.mention} ⚠️ Stop au spam !", delete_after=5)
+        return
+    low = message.content.lower()
+    for w in BANNED_WORDS:
+        if w in low:
+            await message.delete()
+            e = discord.Embed(title="🚫 Message Supprimé", description=f"{author.mention} — insulte",
+                color=discord.Color.red(), timestamp=datetime.utcnow())
+            e.add_field(name="Contenu", value=f"||{message.content[:200]}||")
+            e.set_thumbnail(url=author.display_avatar.url)
+            await log_message(guild, e)
+            # Alerte IA insulte au staff
+            staff_ch = discord.utils.find(lambda c: "logs-bans" in c.name.lower() or "sanction" in c.name.lower(), guild.text_channels)
+            if staff_ch:
+                e2 = discord.Embed(title="🤖 IA — Insulte Détectée",
+                    description=f"{author.mention} a utilisé un mot interdit dans {message.channel.mention}",
+                    color=discord.Color.dark_red(), timestamp=datetime.utcnow())
+                e2.add_field(name="Message", value=f"||{message.content[:200]}||")
+                await staff_ch.send(embed=e2)
+            await message.channel.send(f"{author.mention} ce mot est interdit.", delete_after=5)
+            return
+
+    # ── Anti-mentions massives — DÉSACTIVÉ ───────────────────────────────────
+    pass
+
+    # ── Détection IA contextuelle (mots dangereux en contexte) ───────────────
+    if GROQ_API_KEY and len(message.content) > 20:
+        CONTEXT_PATTERNS = [
+            "je vais te", "je vais vous", "t'es mort", "tu es mort",
+            "je te retrouve", "adresse", "tu vas voir", "je vais venir"
+        ]
+        if any(p in message.content.lower() for p in CONTEXT_PATTERNS):
+            e_threat = discord.Embed(
+                title="🤖 IA — Menace Potentielle Détectée",
+                description=f"Message suspect de {author.mention} dans {message.channel.mention}",
+                color=discord.Color.red(), timestamp=datetime.utcnow()
+            )
+            e_threat.add_field(name="Message", value=f"||{message.content[:300]}||")
+            e_threat.add_field(name="Membre", value=f"{author} (`{author.id}`)")
+            staff_role = discord.utils.get(guild.roles, name="⛩️ ⋮ Gestion Staff")
+            mention_txt = staff_role.mention if staff_role else ""
+            await log_security(guild, e_threat)
+            sec_ch = discord.utils.find(lambda c: any(n in c.name.lower() for n in SECURITY_LOG_NAMES), guild.text_channels)
+            if sec_ch and mention_txt:
+                await sec_ch.send(f"⚠️ {mention_txt} — Menace potentielle détectée !")
+
+    # Salons où les liens sont autorisés
+    LINK_ALLOWED_CHANNELS = [
+        "partenariat",
+        "condi-partenariat",
+        "notre-fiche",
+    ]
+    channel_name_low = message.channel.name.lower()
+
+    # Vérifier si c'est un salon autorisé (nom ou ticket)
+    is_link_allowed = (
+        any(allowed in channel_name_low for allowed in LINK_ALLOWED_CHANNELS)
+        or str(message.channel.id) in tickets_db.get(str(guild.id), {})
+        or has_sanction_role(author, ROLES_BAN)  # Staff autorisé partout
+    )
+
+    for url in re.findall(r'https?://\S+|discord\.gg/\S+|discord\.com/invite/\S+', message.content, re.IGNORECASE):
+        is_suspicious = any(d in url.lower() for d in SUSPICIOUS_LINKS)
+        is_discord_invite = any(x in url.lower() for x in [
+            "discord.gg/", "discord.com/invite/", "discordapp.com/invite/"
+        ])
+        # Ignorer les liens discord.com normaux (pas des invites)
+        if not is_suspicious and not is_discord_invite:
+            continue
+        if (is_suspicious or is_discord_invite) and not is_link_allowed:
+            try:
+                await message.delete()
+            except Exception:
+                pass  # Ignoré intentionnellement
+            label = "Invitation Discord" if is_discord_invite else "Lien Suspect"
+            e = discord.Embed(
+                title=f"🔗 {label} Supprimé",
+                description=f"{author.mention} — lien supprimé",
+                color=discord.Color.red(), timestamp=datetime.utcnow()
+            )
+            e.add_field(name="URL", value=f"||{url[:200]}||")
+            await log(guild, e)
+            await message.channel.send(
+                f"{author.mention} les liens/invitations sont interdits ici. 🔗",
+                delete_after=5
+            )
+            # Mute automatique 5 minutes — seulement si pas staff
+            if not has_sanction_role(author, ROLES_BAN + ROLES_MUTE):
+                try:
+                    until = discord.utils.utcnow() + timedelta(minutes=5)
+                    await author.timeout(until, reason=f"[Auto-mod] Lien interdit : {url[:100]}")
+                    await log_sanction(guild, author, "Mute", f"[Auto-mod] Lien interdit", bot.user or author, extra="5 minutes • Lien/Invitation Discord")
+                except Exception:
+                    pass  # Ignoré intentionnellement
+            return
+    last = xp_cooldowns.get(uid, 0)
+    if now - last > XP_COOLDOWN:
+        xp_cooldowns[uid] = now
+        xp_db.setdefault(gid, {})
+        old_xp = xp_db[gid].get(uid, 0); old_level = get_level(old_xp)
+        xp_db[gid][uid] = old_xp + XP_PER_MSG
+        new_level = get_level(xp_db[gid][uid])
+        save_json("xp.json", xp_db)
+        if new_level > old_level:
+            e = discord.Embed(title="🎉 Level Up!",
+                description=f"{author.mention} passe au **niveau {new_level}** !",
+                color=discord.Color.gold(), timestamp=datetime.utcnow())
+            # Envoyer dans ⭐・niveaux si le salon existe, sinon le salon actuel
+            level_ch = discord.utils.find(
+                lambda c: "niveaux" in c.name.lower() or "niveau" in c.name.lower(),
+                guild.text_channels)
+            target = level_ch if level_ch else message.channel
+            await target.send(embed=e)
+            for req, rname in sorted(LEVEL_ROLES.items()):
+                if new_level >= req:
+                    role = discord.utils.get(guild.roles, name=rname)
+                    if role and role not in author.roles:
+                        try: await author.add_roles(role)
+                        except Exception: pass
+    if gid in custom_cmds_db:
+        trigger = message.content.lower().strip()
+        if trigger in custom_cmds_db[gid]:
+            await message.channel.send(custom_cmds_db[gid][trigger])
+            return
+
+    # ── IA — Réponse automatique ──────────────────────────────────────────────
+    # Ne pas répondre si c'est une commande
+    if message.content.startswith(PREFIX):
+        await bot.process_commands(message)
+        return
+
+    await bot.process_commands(message)
+
+    channel_low = message.channel.name.lower()
+
+    # Vérifier si c'est un salon ignoré
+    if any(ign in channel_low for ign in AI_IGNORE_CHANNELS):
+        return
+
+    if not GROQ_API_KEY:
+        return
+
+    # Conditions pour répondre :
+    # 1. Le bot est mentionné
+    # 2. Quelqu'un répond au bot
+    # 3. C'est un salon IA spécifique (pas "général" pour éviter le spam)
+    bot_mentioned = bot.user in message.mentions
+    reply_to_bot  = (message.reference and message.reference.resolved and
+                     hasattr(message.reference.resolved, 'author') and
+                     message.reference.resolved.author == bot.user)
+    auto_channel  = any(kw in channel_low for kw in ["ia", "ai", "kozakura-bot", "bot-kozakura"])
+
+    should_respond = bot_mentioned or reply_to_bot or auto_channel
+
+    if not should_respond:
+        return
+
+    # Anti-doublon : ignorer si le même message a déjà été traité (protection Railway)
+    msg_key = f"{message.id}"
+    if msg_key in ai_conversations.get("__processed__", set()):
+        return
+    if "__processed__" not in ai_conversations:
+        ai_conversations["__processed__"] = set()
+    ai_conversations["__processed__"].add(msg_key)
+    # Nettoyer après 100 entrées
+    if len(ai_conversations["__processed__"]) > 100:
+        ai_conversations["__processed__"] = set(list(ai_conversations["__processed__"])[-50:])
+
+    # Détecter conflit
+    if await detect_conflict(message.content):
+        staff_role = discord.utils.get(guild.roles, name="⛩️ ⋮ Gestion Staff")
+        alert_ch   = discord.utils.find(lambda c: "log" in c.name.lower() or "staff" in c.name.lower(), guild.text_channels)
+        if alert_ch:
+            e = discord.Embed(
+                title="⚠️ Conflit Détecté par l'IA",
+                description=f"Message potentiellement conflictuel de {author.mention} dans {message.channel.mention}",
+                color=discord.Color.orange(),
+                timestamp=datetime.utcnow()
+            )
+            e.add_field(name="Message", value=f"||{message.content[:300]}||")
+            e.add_field(name="Membre", value=f"{author} (`{author.id}`)")
+            mention = staff_role.mention if staff_role else "@staff"
+            await alert_ch.send(content=mention, embed=e)
+
+    # Construire l'historique de conversation
+    uid = str(author.id)
+    if uid not in ai_conversations:
+        ai_conversations[uid] = []
+
+    # Nettoyer la mention du bot du message
+    content_clean = message.content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip()
+    if not content_clean:
+        content_clean = "Bonjour !"
+
+    ai_conversations[uid].append({"role": "user", "content": f"{author.display_name}: {content_clean}"})
+
+    # Garder seulement les N derniers messages
+    if len(ai_conversations[uid]) > AI_MAX_HISTORY:
+        ai_conversations[uid] = ai_conversations[uid][-AI_MAX_HISTORY:]
+
+    # Indicateur de frappe
+    async with message.channel.typing():
+        # Contexte membre pour réponses personnalisées
+        days  = (datetime.utcnow() - author.joined_at.replace(tzinfo=None)).days if author.joined_at else 0
+        level = get_level(xp_db.get(gid, {}).get(uid, 0))
+        sancs = len(sanctions_db.get(gid, {}).get(uid, []))
+        member_ctx = {"days": days, "level": level, "sanctions": sancs}
+        response = await call_groq(ai_conversations[uid], member_ctx=member_ctx)
+
+    # Sauvegarder la réponse dans l'historique
+    ai_conversations[uid].append({"role": "assistant", "content": response})
+
+    # Envoyer la réponse
+    if len(response) > 2000:
+        # Découper si trop long
+        for i in range(0, len(response), 1990):
+            await message.reply(response[i:i+1990])
+    else:
+        await message.reply(response)
+
+@bot.event
+async def on_message_delete(message):
+    if message.author.bot: return
+
+    # Log photos/fichiers séparé
+    if message.attachments:
+        for att in message.attachments:
+            e_photo = discord.Embed(
+                title="🖼️ Fichier Supprimé",
+                description=f"Par {message.author.mention} dans {message.channel.mention}",
+                color=discord.Color.orange(), timestamp=datetime.utcnow()
+            )
+            e_photo.add_field(name="Fichier", value=att.filename)
+            e_photo.add_field(name="URL", value=att.url[:200] if att.url else "N/A")
+            if att.content_type and att.content_type.startswith("image"):
+                e_photo.set_image(url=att.proxy_url)
+            await log_photo(message.guild, e_photo)
+
+    # Log message supprimé
+    if message.content:
+        e = discord.Embed(title="🗑️ Message Supprimé",
+            description=f"Par {message.author.mention} dans {message.channel.mention}",
+            color=discord.Color.red(), timestamp=datetime.utcnow())
+        e.add_field(name="Contenu", value=message.content[:1000] or "*(vide)*")
+        e.set_thumbnail(url=message.author.display_avatar.url)
+        await log_message(message.guild, e)
+
+@bot.event
+async def on_message_edit(before, after):
+    if before.author.bot or before.content == after.content: return
+    e = discord.Embed(title="✏️ Message Modifié",
+        description=f"Par {before.author.mention} dans {before.channel.mention}",
+        color=discord.Color.blue(), timestamp=datetime.utcnow())
+    e.add_field(name="Avant", value=before.content[:500] or "*(vide)*", inline=False)
+    e.add_field(name="Après", value=after.content[:500] or "*(vide)*", inline=False)
+    e.set_thumbnail(url=before.author.display_avatar.url)
+    await log_message(before.guild, e)
+
+
+# ─── HELPER SALON SANCTION ────────────────────────────────────────────────────
+sanctions_db = load_json("sanctions.json", {})
+
+async def log_sanction(guild, member, type_sanction, reason, moderator, extra=""):
+    """Enregistre la sanction en DB et l'envoie dans le salon sanction"""
+    gid = str(guild.id); uid = str(member.id)
+    sanctions_db.setdefault(gid, {}).setdefault(uid, []).append({
+        "type":      type_sanction,
+        "reason":    reason,
+        "by":        str(moderator.id),
+        "by_name":   moderator.display_name,
+        "date":      str(datetime.utcnow()),
+        "extra":     extra
+    })
+    save_json("sanctions.json", sanctions_db)
+
+    # Couleurs par type
+    colors = {
+        "Ban": discord.Color.dark_red(),
+        "Kick": discord.Color.orange(),
+        "Mute": discord.Color.greyple(),
+        "Unmute": discord.Color.green(),
+        "Warn": discord.Color.yellow(),
+        "Unban": discord.Color.green(),
+    }
+    emojis = {
+        "Ban": "🔨", "Kick": "👟", "Mute": "🔇",
+        "Unmute": "🔊", "Warn": "⚠️", "Unban": "✅"
+    }
+    color = colors.get(type_sanction, discord.Color.red())
+    emoji = emojis.get(type_sanction, "🔴")
+
+    e = discord.Embed(
+        title=f"{emoji} {type_sanction}",
+        color=color,
+        timestamp=datetime.utcnow()
+    )
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.add_field(name="👤 Membre",     value=f"{member.mention}\n`{member} ({member.id})`", inline=True)
+    e.add_field(name="🛡️ Modérateur", value=moderator.mention, inline=True)
+    e.add_field(name="📋 Raison",     value=reason, inline=False)
+    if extra:
+        e.add_field(name="ℹ️ Info", value=extra, inline=False)
+    total = len(sanctions_db[gid][uid])
+    e.set_footer(text=f"Sanction #{total} • {guild.name}")
+
+    # Logs sanctions → logs-bans uniquement
+    await log_ban(guild, e)
+    return e
+
+# ─── RÔLES AUTORISÉS POUR LES SANCTIONS ──────────────────────────────────────
+ROLES_BAN  = ("ykoza", "Univer", "Kozakura C.O.D", "Co-Fondateur", "Développer", "perm ban")
+ROLES_KICK = ("ykoza", "Univer", "Kozakura C.O.D", "Co-Fondateur", "Développer", "perm ban")
+ROLES_MUTE = ["ykoza", "Univer", "Kozakura C.O.D", "Co-Fondateur", "Développer", "perm ban", "⛩️ ⋮ Gestion Staff", "🏮 ⋮ Gestion Abus"]
+ROLES_WARN = ["ykoza", "Univer", "Kozakura C.O.D", "Co-Fondateur", "Développer", "perm ban", "⛩️ ⋮ Gestion Staff", "🏮 ⋮ Gestion Abus"]
+
+def has_sanction_role(member, roles_list):
+    """Vérifie si le membre a l'un des rôles autorisés"""
+    member_roles = [r.name for r in member.roles]
+    return any(r in member_roles for r in roles_list)
+
+# ─── MODÉRATION ───────────────────────────────────────────────────────────────
+@bot.command()
+async def ban(ctx, member: discord.Member, *, reason="Aucune raison"):
+    if not has_sanction_role(ctx.author, ROLES_BAN):
+        return await ctx.send("❌ Tu n'as pas la permission de bannir.", delete_after=5)
+    # MP d'abord, AVANT le ban (après le ban le membre ne peut plus recevoir de MP)
+    await dm(member, "🔨 Tu as été banni",
+        f"**Serveur :** {ctx.guild.name}\n**Raison :** {reason}\n\nSi tu penses que c'est une erreur, contacte un administrateur.",
+        color=discord.Color.dark_red())
+    await member.ban(reason=reason)
+    e = await log_sanction(ctx.guild, member, "Ban", reason, ctx.author)
+    await ctx.send(embed=e)
+
+@bot.command()
+async def unban(ctx, user_id: int, *, reason="Aucune raison"):
+    if not has_sanction_role(ctx.author, ROLES_BAN):
+        return await ctx.send("❌ Tu n'as pas la permission de débannir.", delete_after=5)
+    user = await bot.fetch_user(user_id)
+    await ctx.guild.unban(user, reason=reason)
+    e = discord.Embed(title="✅ Unban", color=discord.Color.green(), timestamp=datetime.utcnow())
+    e.add_field(name="👤 Utilisateur", value=f"`{user} ({user.id})`")
+    e.add_field(name="🛡️ Modérateur",  value=ctx.author.mention)
+    e.add_field(name="📋 Raison",      value=reason, inline=False)
+    await log(ctx.guild, e)
+    await ctx.send(embed=e)
+
+@bot.command()
+async def kick(ctx, member: discord.Member, *, reason="Aucune raison"):
+    if not has_sanction_role(ctx.author, ROLES_KICK):
+        return await ctx.send("❌ Tu n'as pas la permission d'expulser.", delete_after=5)
+    await dm(member, "👟 Tu as été expulsé", f"**Serveur :** {ctx.guild.name}\n**Raison :** {reason}")
+    await member.kick(reason=reason)
+    e = await log_sanction(ctx.guild, member, "Kick", reason, ctx.author)
+    await ctx.send(embed=e)
+
+@bot.command()
+async def mute(ctx, member: discord.Member, duration: int = 10, *, reason="Aucune raison"):
+    if not has_sanction_role(ctx.author, ROLES_MUTE):
+        return await ctx.send("❌ Tu n'as pas la permission de mute.", delete_after=5)
+    until = discord.utils.utcnow() + timedelta(minutes=duration)
+    await member.timeout(until, reason=reason)
+    await dm(member, "🔇 Tu as été rendu muet",
+        f"**Serveur :** {ctx.guild.name}\n**Durée :** {duration} min\n**Raison :** {reason}\n\nTu seras automatiquement démuté après.",
+        color=discord.Color.greyple())
+    e = await log_sanction(ctx.guild, member, "Mute", reason, ctx.author, extra=f"Durée : {duration} min")
+    await ctx.send(embed=e)
+
+@bot.command()
+async def unmute(ctx, member: discord.Member):
+    if not has_sanction_role(ctx.author, ROLES_MUTE):
+        return await ctx.send("❌ Tu n'as pas la permission de démute.", delete_after=5)
+    await member.timeout(None)
+    await dm(member, "🔊 Tu as été démuté",
+        f"**Serveur :** {ctx.guild.name}\nTu peux à nouveau parler !",
+        color=discord.Color.green())
+    e = await log_sanction(ctx.guild, member, "Unmute", "Fin du mute", ctx.author)
+    await ctx.send(embed=e)
+
+@bot.command()
+@commands.has_permissions(manage_messages=True)
+async def purge(ctx, amount: int):
+    deleted = await ctx.channel.purge(limit=amount + 1)
+    count = len(deleted) - 1
+    e = discord.Embed(description=f"🗑️ {count} messages supprimés par {ctx.author.mention}",
+        color=discord.Color.red(), timestamp=datetime.utcnow())
+    await log(ctx.guild, e)
+    await ctx.send(f"✅ {count} messages supprimés.", delete_after=5)
+
+@bot.command()
+@commands.has_permissions(manage_messages=True)
+async def clear(ctx, amount_or_member=None, amount: int = 10):
+    """
+    !clear [nombre]           — Supprime les X derniers messages
+    !clear @membre [nombre]   — Supprime les X derniers messages d'un membre
+    """
+    target_member = None
+
+    # Déterminer si le premier argument est un membre ou un nombre
+    if amount_or_member is not None:
+        # Essayer de convertir en membre
+        try:
+            target_member = await commands.MemberConverter().convert(ctx, str(amount_or_member))
+        except commands.BadArgument:
+            # C'est un nombre
+            try:
+                amount = int(amount_or_member)
+                target_member = None
+            except ValueError:
+                return await ctx.send("❌ Usage : `!clear [nombre]` ou `!clear @membre [nombre]`")
+
+    amount = min(max(amount, 1), 100)
+
+    try:
+        await ctx.message.delete()
+    except Exception: pass
+
+    if target_member:
+        # Supprimer uniquement les messages du membre ciblé
+        def is_target(msg):
+            return msg.author == target_member
+
+        deleted = await ctx.channel.purge(limit=300, check=is_target, after=discord.utils.utcnow() - timedelta(days=14))
+        # Limiter au nombre demandé
+        count = min(len(deleted), amount)
+        if len(deleted) > amount:
+            # On a supprimé trop, pas possible de "unsuppress" donc on informe juste
+            pass
+
+        e = discord.Embed(
+            title="🧹 Clear Ciblé",
+            description=f"{ctx.author.mention} a supprimé **{len(deleted)}** message(s) de {target_member.mention}",
+            color=discord.Color.red(),
+            timestamp=datetime.utcnow()
+        )
+        e.set_thumbnail(url=target_member.display_avatar.url)
+        e.add_field(name="Membre ciblé", value=target_member.mention)
+        e.add_field(name="Messages supprimés", value=str(len(deleted)))
+        e.add_field(name="Salon", value=ctx.channel.mention)
+    else:
+        deleted = await ctx.channel.purge(limit=amount)
+        e = discord.Embed(
+            title="🧹 Clear",
+            description=f"{ctx.author.mention} a supprimé **{len(deleted)}** message(s) dans {ctx.channel.mention}",
+            color=discord.Color.red(),
+            timestamp=datetime.utcnow()
+        )
+
+    await log(ctx.guild, e)
+    await ctx.send(embed=e, delete_after=5)
+
+
+@bot.command()
+@commands.has_permissions(manage_channels=True)
+async def slowmode(ctx, seconds: int):
+    await ctx.channel.edit(slowmode_delay=seconds)
+    status = f"**{seconds}s**" if seconds > 0 else "**désactivé**"
+    await ctx.send(f"⏱️ Slowmode {status} dans {ctx.channel.mention}")
+
+# ─── AVERTISSEMENTS ───────────────────────────────────────────────────────────
+@bot.command()
+async def warn(ctx, member: discord.Member, *, reason="Aucune raison"):
+    if not has_sanction_role(ctx.author, ROLES_WARN):
+        return await ctx.send("❌ Tu n'as pas la permission d'avertir.", delete_after=5)
+    gid = str(ctx.guild.id); uid = str(member.id)
+    warnings_db.setdefault(gid, {}).setdefault(uid, []).append(
+        {"reason": reason, "by": str(ctx.author.id), "date": str(datetime.utcnow())})
+    save_json("warnings.json", warnings_db)
+    count = len(warnings_db[gid][uid])
+    e = await log_sanction(ctx.guild, member, "Warn", reason, ctx.author, extra=f"Avertissement n°{count}")
+    await ctx.send(embed=e)
+    await dm(member, f"⚠️ Avertissement ({count})",
+        f"**Serveur :** {ctx.guild.name}\n**Raison :** {reason}")
+    if count >= 3:
+        await ctx.send(f"⚠️ {member.mention} a **{count} avertissements** — sanction recommandée.")
+
+@bot.command()
+async def warnings(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    data = warnings_db.get(str(ctx.guild.id), {}).get(str(member.id), [])
+    e = discord.Embed(title=f"⚠️ Avertissements de {member.name}",
+        description=f"Total : **{len(data)}**", color=discord.Color.yellow())
+    for i, w in enumerate(data[-5:], 1):
+        e.add_field(name=f"#{i} — {w['date'][:10]}", value=w['reason'], inline=False)
+    await ctx.send(embed=e)
+
+@bot.command()
+@commands.has_permissions(kick_members=True)
+async def clearwarns(ctx, member: discord.Member):
+    gid = str(ctx.guild.id); uid = str(member.id)
+    if gid in warnings_db: warnings_db[gid][uid] = []
+    save_json("warnings.json", warnings_db)
+    await ctx.send(f"✅ Warns de {member.mention} réinitialisés.")
+
+# ─── INFOSANCTION ─────────────────────────────────────────────────────────────
+@bot.command()
+@commands.has_permissions(kick_members=True)
+async def infosanction(ctx, member: discord.Member):
+    """!infosanction @membre — Affiche toutes les sanctions d'un membre"""
+    gid  = str(ctx.guild.id)
+    uid  = str(member.id)
+    data = sanctions_db.get(gid, {}).get(uid, [])
+
+    if not data:
+        e = discord.Embed(
+            title=f"📋 Sanctions de {member.display_name}",
+            description="✅ Aucune sanction enregistrée.",
+            color=discord.Color.green(),
+            timestamp=datetime.utcnow()
+        )
+        e.set_thumbnail(url=member.display_avatar.url)
+        return await ctx.send(embed=e)
+
+    # Compter par type
+    counts = {}
+    for s in data:
+        t = s["type"]
+        counts[t] = counts.get(t, 0) + 1
+
+    summary = " | ".join(f"**{v}x {k}**" for k, v in counts.items())
+
+    e = discord.Embed(
+        title=f"📋 Sanctions de {member.display_name}",
+        description=f"Total : **{len(data)} sanction(s)**\n{summary}",
+        color=discord.Color.red(),
+        timestamp=datetime.utcnow()
+    )
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.add_field(name="👤 Membre", value=f"{member.mention} (`{member.id}`)", inline=False)
+
+    # Afficher les 10 dernières sanctions
+    emojis_type = {
+        "Ban": "🔨", "Kick": "👟", "Mute": "🔇",
+        "Unmute": "🔊", "Warn": "⚠️", "Unban": "✅"
+    }
+    for i, s in enumerate(reversed(data[-10:]), 1):
+        emoji = emojis_type.get(s["type"], "🔴")
+        date  = s["date"][:10]
+        extra = f"\n*{s['extra']}*" if s.get("extra") else ""
+        e.add_field(
+            name=f"{emoji} #{len(data) - i + 1} — {s['type']} ({date})",
+            value=f"📋 {s['reason']}{extra}\n🛡️ Par : {s['by_name']}",
+            inline=False
+        )
+
+    if len(data) > 10:
+        e.set_footer(text=f"Affichage des 10 dernières sur {len(data)} sanctions • {ctx.guild.name}")
+    else:
+        e.set_footer(text=f"{ctx.guild.name}")
+
+    await ctx.send(embed=e)
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def clearsanctions(ctx, member: discord.Member):
+    """!clearsanctions @membre — Efface toutes les sanctions d'un membre"""
+    gid = str(ctx.guild.id); uid = str(member.id)
+    if gid in sanctions_db: sanctions_db[gid][uid] = []
+    save_json("sanctions.json", sanctions_db)
+    await ctx.send(f"✅ Toutes les sanctions de {member.mention} ont été effacées.")
+
+# ─── XP / NIVEAUX ─────────────────────────────────────────────────────────────
+@bot.command()
+async def rank(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    gid = str(ctx.guild.id); uid = str(member.id)
+    xp = xp_db.get(gid, {}).get(uid, 0); lvl = get_level(xp)
+    e = discord.Embed(title=f"🏆 Rang de {member.name}", color=discord.Color.gold())
+    e.add_field(name="Niveau", value=lvl)
+    e.add_field(name="XP", value=f"{xp} / {xp_for_level(lvl+1)}")
+    e.set_thumbnail(url=member.display_avatar.url)
+    await ctx.send(embed=e)
+
+@bot.command()
+async def leaderboard(ctx):
+    gid = str(ctx.guild.id)
+    top = sorted(xp_db.get(gid, {}).items(), key=lambda x: x[1], reverse=True)[:10]
+    e = discord.Embed(title="🏆 Leaderboard XP", color=discord.Color.gold())
+    for i, (uid, xp) in enumerate(top, 1):
+        m = ctx.guild.get_member(int(uid))
+        e.add_field(name=f"#{i} {m.name if m else uid}", value=f"Niv.{get_level(xp)} | {xp} XP", inline=False)
+    await ctx.send(embed=e)
+
+# ─── BIENVENUE MANUELLE ────────────────────────────────────────────────────────
+@bot.command(name="bvn")
+@commands.has_permissions(manage_messages=True)
+async def bvn(ctx, member: discord.Member = None):
+    """!bvn @membre — Envoie un message de bienvenue stylé et donne 50 XP bonus"""
+    member = member or ctx.author
+    guild  = ctx.guild
+
+    # Cherche le salon contenant "chat" dans le nom
+    chat_ch = discord.utils.find(lambda c: "chat" in c.name.lower(), guild.text_channels)
+    if not chat_ch:
+        return await ctx.send("❌ Aucun salon contenant **chat** trouvé.", delete_after=8)
+
+    # ── Données XP ───────────────────────────────────────────────────────────
+    gid = str(guild.id); uid = str(member.id)
+    gid_data = xp_db.setdefault(gid, {})
+    old_xp   = gid_data.get(uid, 0)
+    new_xp   = old_xp + 50
+    gid_data[uid] = new_xp
+    save_json("xp.json", xp_db)
+
+    lvl      = get_level(new_xp)
+    next_xp  = xp_for_level(lvl + 1)
+
+    # ── Rang dans le leaderboard ─────────────────────────────────────────────
+    sorted_lb = sorted(gid_data.items(), key=lambda x: x[1], reverse=True)
+    rank_pos  = next((i + 1 for i, (u, _) in enumerate(sorted_lb) if u == uid), None)
+
+    # ── Couleurs rose / sakura ────────────────────────────────────────────────
+    SAKURA_PINK = 0xFF89B4   # rose pastel sakura
+
+    # ── Barre de progression XP ──────────────────────────────────────────────
+    progress  = new_xp / next_xp if next_xp > 0 else 1
+    bar_fill  = int(progress * 12)
+    bar       = "🌸" * bar_fill + "・" * (12 - bar_fill)
+
+    # ── Embed principal ───────────────────────────────────────────────────────
+    e = discord.Embed(
+        title="✿ 桜 ようこそ — Bienvenue ! 桜 ✿",
+        description=(
+            f"# 🎀 {member.mention}\n"
+            f"*Le serveur s'illumine d'une fleur de cerisier supplémentaire~* 🌸\n\n"
+            f"╔═══════════════════════════╗\n"
+            f"║  ✨ **Kozakura** est ravie de t'accueillir  ✨\n"
+            f"╚═══════════════════════════╝\n\n"
+            f"Explore, discute et deviens une légende de ce sanctuaire ⛩️\n"
+            f"N'hésite pas à consulter les salons d'informations\n"
+            f"pour commencer ton aventure ! 🗺️"
+        ),
+        color=SAKURA_PINK,
+        timestamp=datetime.utcnow()
+    )
+
+    e.set_thumbnail(url=member.display_avatar.url)
+    if guild.icon:
+        e.set_image(url=guild.icon.url)
+
+    # ── Stats du membre ───────────────────────────────────────────────────────
+    e.add_field(
+        name="🌸 Niveau & XP",
+        value=(
+            f"**Niveau** ✦ `{lvl}`\n"
+            f"**XP** ✦ `{new_xp}` / `{next_xp}`\n"
+            f"{bar}"
+        ),
+        inline=True
+    )
+    e.add_field(
+        name="🏮 Rang du serveur",
+        value=f"**#{rank_pos}** sur `{len(sorted_lb)}` membres" if rank_pos else "*(nouveau)*",
+        inline=True
+    )
+    e.add_field(
+        name="🎁 Bonus offert",
+        value="**+50 XP** 🌸 cadeau de bienvenue !",
+        inline=True
+    )
+
+    # ── Compte Discord ────────────────────────────────────────────────────────
+    joined_days = (datetime.utcnow() - member.joined_at.replace(tzinfo=None)).days if member.joined_at else 0
+    account_age = (datetime.utcnow() - member.created_at.replace(tzinfo=None)).days
+    e.add_field(
+        name="📅 Présence",
+        value=(
+            f"**Rejoint** ✦ {member.joined_at.strftime('%d/%m/%Y') if member.joined_at else '?'}\n"
+            f"**Compte créé** ✦ il y a `{account_age}` jours"
+        ),
+        inline=True
+    )
+
+    # ── Rôles ─────────────────────────────────────────────────────────────────
+    roles = [r.mention for r in member.roles if r.name != "@everyone"]
+    e.add_field(
+        name=f"🎭 Rôles `({len(roles)})`",
+        value=", ".join(roles[:5]) + ("…" if len(roles) > 5 else "") if roles else "*aucun rôle*",
+        inline=True
+    )
+
+    e.set_footer(
+        text="✿ Kozakura Bot ✿ • 桜の加護があなたと共にありますように",
+        icon_url=guild.me.display_avatar.url
+    )
+
+    await chat_ch.send(embed=e)
+
+    # Confirmation discrète dans le salon d'origine si différent
+    if ctx.channel != chat_ch:
+        await ctx.send(f"🌸 Message de bienvenue envoyé dans {chat_ch.mention} avec **+50 XP** pour {member.mention} !", delete_after=8)
+
+# ─── SUGGESTIONS / SONDAGES ───────────────────────────────────────────────────
+@bot.command()
+async def suggest(ctx, *, suggestion):
+    ch_id = get_cfg(ctx.guild.id, "suggestion_channel")
+    ch = ctx.guild.get_channel(int(ch_id)) if ch_id else ctx.channel
+    e = discord.Embed(title="💡 Suggestion", description=suggestion,
+        color=discord.Color.blue(), timestamp=datetime.utcnow())
+    e.set_footer(text=f"Par {ctx.author.name}")
+    msg = await ch.send(embed=e)
+    await msg.add_reaction("✅"); await msg.add_reaction("❌")
+    if ch != ctx.channel: await ctx.send("✅ Suggestion envoyée !", delete_after=5)
+
+@bot.command()
+async def poll(ctx, question, *options):
+    if len(options) < 2: return await ctx.send("❌ Minimum 2 options.")
+    emojis = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
+    desc = "\n".join(f"{emojis[i]} {opt}" for i, opt in enumerate(options[:10]))
+    e = discord.Embed(title=f"📊 {question}", description=desc,
+        color=discord.Color.blurple(), timestamp=datetime.utcnow())
+    e.set_footer(text=f"Sondage par {ctx.author.name}")
+    msg = await ctx.send(embed=e)
+    for i in range(len(options[:10])): await msg.add_reaction(emojis[i])
+
+# ─── RAPPELS ──────────────────────────────────────────────────────────────────
+@bot.command()
+async def remind(ctx, duration: int, unit: str, *, message):
+    mult = {"s": 1, "min": 60, "h": 3600, "j": 86400}.get(unit.lower(), 60)
+    reminders_db.setdefault(str(ctx.author.id), []).append({
+        "channel": ctx.channel.id, "message": message,
+        "fire_at": time.time() + duration * mult})
+    save_json("reminders.json", reminders_db)
+    await ctx.send(f"⏰ Rappel dans **{duration} {unit}** !", delete_after=10)
+
+@tasks.loop(seconds=30)
+async def check_reminders():
+    now = time.time(); changed = False
+    for uid, rems in list(reminders_db.items()):
+        keep = []
+        for r in rems:
+            if now >= r["fire_at"]:
+                changed = True
+                ch = bot.get_channel(r["channel"])
+                try:
+                    user = await bot.fetch_user(int(uid))
+                    if ch: await ch.send(f"⏰ {user.mention} Rappel : **{r['message']}**")
+                except Exception: pass
+            else: keep.append(r)
+        reminders_db[uid] = keep
+    if changed: save_json("reminders.json", reminders_db)
+
+# ─── STATS ────────────────────────────────────────────────────────────────────
+@bot.command()
+async def stats(ctx):
+    g = ctx.guild
+    bots = sum(1 for m in g.members if m.bot)
+    online = sum(1 for m in g.members if m.status != discord.Status.offline and not m.bot)
+    vocal = sum(len(vc.members) for vc in g.voice_channels)
+    e = discord.Embed(title=f"📊 Stats de {g.name}", color=discord.Color.blurple(),
+        timestamp=datetime.utcnow())
+    if g.icon: e.set_thumbnail(url=g.icon.url)
+    e.add_field(name="👥 Membres", value=g.member_count - bots)
+    e.add_field(name="🤖 Bots", value=bots)
+    e.add_field(name="🟢 En ligne", value=online)
+    e.add_field(name="🎙️ En vocal", value=vocal)
+    e.add_field(name="📅 Créé le", value=g.created_at.strftime("%d/%m/%Y"))
+    inv = get_cfg(g.id, "invite_link")
+    if inv: e.add_field(name="🔗 Invitation", value=inv, inline=False)
+    await ctx.send(embed=e)
+
+# ─── COMMANDES PERSONNALISÉES ─────────────────────────────────────────────────
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def addcmd(ctx, trigger, *, response):
+    custom_cmds_db.setdefault(str(ctx.guild.id), {})[trigger.lower()] = response
+    save_json("custom_commands.json", custom_cmds_db)
+    await ctx.send(f"✅ Commande `{trigger}` ajoutée !")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def delcmd(ctx, trigger):
+    gid = str(ctx.guild.id)
+    if gid in custom_cmds_db and trigger.lower() in custom_cmds_db[gid]:
+        del custom_cmds_db[gid][trigger.lower()]
+        save_json("custom_commands.json", custom_cmds_db)
+        await ctx.send(f"✅ Commande `{trigger}` supprimée.")
+    else: await ctx.send("❌ Introuvable.")
+
+# ─── RÔLES RÉACTIONS ──────────────────────────────────────────────────────────
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def reactionrole(ctx, emoji: str, role: discord.Role, *, desc="Réagis pour obtenir ce rôle"):
+    e = discord.Embed(title="🎭 Rôle par Réaction",
+        description=f"{emoji} → {role.mention}\n{desc}", color=discord.Color.purple())
+    msg = await ctx.send(embed=e); await msg.add_reaction(emoji)
+    reaction_roles[str(msg.id)] = {"role_id": role.id, "emoji": emoji}
+    save_json("reaction_roles.json", reaction_roles)
+
+# ─── COMPTEURS ────────────────────────────────────────────────────────────────
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setupcounters(ctx):
+    g = ctx.guild
+    cat = await g.create_category("📊 Statistiques")
+    mc = await g.create_voice_channel(f"👥 Membres: {g.member_count}", category=cat)
+    oc = await g.create_voice_channel("🟢 En ligne: 0", category=cat)
+    vc = await g.create_voice_channel("🎙️ En vocal: 0", category=cat)
+    set_cfg(g.id, "counter_members", mc.id)
+    set_cfg(g.id, "counter_online", oc.id)
+    set_cfg(g.id, "counter_voice", vc.id)
+    await ctx.send("✅ Compteurs créés !")
+
+@tasks.loop(minutes=5)
+async def update_counters():
+    for g in bot.guilds:
+        try:
+            mc_id = get_cfg(g.id, "counter_members")
+            oc_id = get_cfg(g.id, "counter_online")
+            vc_id = get_cfg(g.id, "counter_voice")
+            # IDs des salons compteurs à exclure du compte vocal
+            counter_ids = set(filter(None, [mc_id, oc_id, vc_id]))
+            if mc_id:
+                ch = g.get_channel(int(mc_id))
+                if ch: await ch.edit(name=f"👥 Membres: {g.member_count}")
+            if oc_id:
+                online = sum(1 for m in g.members if m.status != discord.Status.offline and not m.bot)
+                ch = g.get_channel(int(oc_id))
+                if ch: await ch.edit(name=f"🟢 En ligne: {online}")
+            if vc_id:
+                # Exclure les salons compteurs du calcul
+                vocal = sum(
+                    len([m for m in vc.members if not m.bot])
+                    for vc in g.voice_channels
+                    if str(vc.id) not in counter_ids
+                )
+                ch = g.get_channel(int(vc_id))
+                if ch: await ch.edit(name=f"🎙️ En vocal: {vocal}")
+        except Exception: pass
+
+async def refresh_vocal_counter(guild):
+    """Met à jour instantanément le compteur vocal"""
+    try:
+        vc_id = get_cfg(guild.id, "counter_voice")
+        mc_id = get_cfg(guild.id, "counter_members")
+        oc_id = get_cfg(guild.id, "counter_online")
+        if not vc_id: return
+        counter_ids = set(filter(None, [str(mc_id), str(oc_id), str(vc_id)]))
+        vocal = sum(
+            len([m for m in vc.members if not m.bot])
+            for vc in guild.voice_channels
+            if str(vc.id) not in counter_ids
+        )
+        ch = guild.get_channel(int(vc_id))
+        if ch: await ch.edit(name=f"🎙️ En vocal: {vocal}")
+    except Exception: pass
+
+# ─── CONFIGURATION ADMIN ──────────────────────────────────────────────────────
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setlog(ctx, *, arg: str):
+    channel = await resolve_channel(ctx, arg)
+    if not channel: return await ctx.send("❌ Salon introuvable.")
+    set_cfg(ctx.guild.id, "log_channel", channel.id)
+    await ctx.send(f"✅ Logs → {channel.mention}")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setwelcome(ctx, *, arg: str):
+    channel = await resolve_channel(ctx, arg)
+    if not channel: return await ctx.send("❌ Salon introuvable.")
+    set_cfg(ctx.guild.id, "welcome_channel", channel.id)
+    await ctx.send(f"✅ Bienvenue → {channel.mention}")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setwelcomemsg(ctx, *, message):
+    set_cfg(ctx.guild.id, "welcome_message", message)
+    await ctx.send("✅ Message mis à jour ! (`{user}` `{server}` `{count}` disponibles)")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setautorole(ctx, *, arg: str):
+    role = await resolve_role(ctx, arg)
+    if not role: return await ctx.send("❌ Rôle introuvable.")
+    set_cfg(ctx.guild.id, "auto_role", role.id)
+    await ctx.send(f"✅ Auto-rôle → {role.mention}")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setsuggestions(ctx, *, arg: str):
+    channel = await resolve_channel(ctx, arg)
+    if not channel: return await ctx.send("❌ Salon introuvable.")
+    set_cfg(ctx.guild.id, "suggestion_channel", channel.id)
+    await ctx.send(f"✅ Suggestions → {channel.mention}")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setraidthreshold(ctx, number: int):
+    set_cfg(ctx.guild.id, "raid_threshold", number)
+    await ctx.send(f"✅ Seuil anti-raid : **{number}** joins/10s")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setinvite(ctx, link: str):
+    set_cfg(ctx.guild.id, "invite_link", link)
+    await ctx.send(f"✅ Lien d'invitation enregistré.")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def addbanword(ctx, word: str):
+    BANNED_WORDS.append(word.lower())
+    await ctx.send(f"✅ Mot `{word}` ajouté à la liste noire.")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🎫 SYSTÈME DE TICKETS AVANCÉ — 4 CATÉGORIES
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Types de tickets avec leur config
+TICKET_TYPES = {
+    "staff": {
+        "label": "⚒️ Contacter un Gestion Staff",
+        "emoji": "⚒️",
+        "color": discord.Color.blue(),
+        "role":  ROLE_GESTION_STAFF,
+        "description": "Pour devenir staff, réclamer un rank up ou récupérer des rôles.",
+        "style": discord.ButtonStyle.blurple,
+    },
+    "abus": {
+        "label": "🔴 Contacter un Gestion Abus",
+        "emoji": "🔴",
+        "color": discord.Color.red(),
+        "role":  ROLE_GESTION_ABUS,
+        "description": "Pour signaler un abus, un conflit ou contester une sanction.",
+        "style": discord.ButtonStyle.red,
+    },
+    "cod": {
+        "label": "👑 Contacter Kozakura C.O.D",
+        "emoji": "👑",
+        "color": discord.Color.gold(),
+        "role":  ROLE_COD,
+        "description": "Pour contacter la direction. Décalages, fusions, fournisseurs...",
+        "style": discord.ButtonStyle.grey,
+    },
+    "partenariat": {
+        "label": "🤝 Contacter Partenariat",
+        "emoji": "🤝",
+        "color": discord.Color.green(),
+        "role":  ROLE_COD,   # Partenariat géré uniquement par C.O.D
+        "description": "Pour proposer un partenariat avec le serveur.",
+        "style": discord.ButtonStyle.green,
+    },
+}
+
+async def log_ticket(guild, embed):
+    ch_id = get_cfg(guild.id, "ticket_log_channel")
+    if ch_id:
+        ch = guild.get_channel(int(ch_id))
+        if not ch:
+            try: ch = await guild.fetch_channel(int(ch_id))
+            except: return
+        if ch: await ch.send(embed=embed)
+
+def get_ticket_overwrites(guild, author, ticket_type: str):
+    """
+    Construit les permissions du salon selon le type de ticket.
+    - Personne ne voit par défaut
+    - L'auteur voit
+    - Le rôle concerné voit
+    - C.O.D voit TOUT
+    - Partenariat : visible uniquement par C.O.D (pas de rôle Partenariat)
+    """
+    cod_role = discord.utils.get(guild.roles, name=ROLE_COD)
+
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(read_messages=False),
+        author: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True),
+        guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True, manage_permissions=True),
+    }
+
+    # C.O.D voit tout
+    if cod_role:
+        overwrites[cod_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
+
+    # Ajouter le rôle spécifique (sauf partenariat qui est géré uniquement par C.O.D)
+    if ticket_type != "partenariat":
+        cfg = TICKET_TYPES[ticket_type]
+        role = discord.utils.get(guild.roles, name=cfg["role"])
+        if role and role != cod_role:
+            overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
+
+    return overwrites
+
+# ─── CONFIG TICKETS ───────────────────────────────────────────────────────────
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setticketcategory(ctx, *, arg: str):
+    arg = arg.strip()
+    cat = None
+    if arg.isdigit(): cat = ctx.guild.get_channel(int(arg))
+    if not cat:
+        cat = discord.utils.find(
+            lambda c: isinstance(c, discord.CategoryChannel) and c.name.lower() == arg.lower(),
+            ctx.guild.categories)
+    if not cat: return await ctx.send("❌ Catégorie introuvable. Tape le nom exact.")
+    set_cfg(ctx.guild.id, "ticket_category", cat.id)
+    await ctx.send(f"✅ Catégorie tickets → **{cat.name}**")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setticketlog(ctx, *, arg: str):
+    channel = await resolve_channel(ctx, arg)
+    if not channel: return await ctx.send("❌ Salon introuvable.")
+    set_cfg(ctx.guild.id, "ticket_log_channel", channel.id)
+    await ctx.send(f"✅ Logs tickets → {channel.mention}")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def ticketpanel(ctx):
+    """Envoie le panel de tickets avec les 4 boutons"""
+    e = discord.Embed(
+        title="📩 Contacter le Support de Kozakura",
+        description=(
+            "🌟 **Le support du serveur est disponible 24H/24 et 7J/7** 🌟\n\n"
+            "**◈ Les Tickets :**\n"
+            "Il y a 4 catégories de tickets mis à votre disposition :\n\n"
+            "⚒️ **Les tickets Gestion Staff :** Pour devenir staff, réclamer un rank up ou récupérer des rôles.\n\n"
+            "🔴 **Les tickets Gestion Abus :** Pour signaler un abus ou un conflit avec un membre ou staff. "
+            "Défends ton innocence si tu es muté injustement.\n\n"
+            "👑 **Les tickets Kozakura C.O.D :** Pour contacter la direction du serveur. "
+            "Décalages, fusions, fournisseurs...\n\n"
+            "🤝 **Les tickets Partenariat :** Pour proposer un partenariat avec le serveur.\n\n"
+            "⚠️ *Toute demande concernant les giveaways et concours nitro ne sont pas pris en charge.*\n\n"
+            "─ Support Kozakura"
+        ),
+        color=discord.Color.blurple()
+    )
+    e.set_footer(text=ctx.guild.name)
+    await ctx.send(embed=e, view=TicketPanelView())
+    try: await ctx.message.delete()
+    except Exception: pass
+
+# ─── VIEW PRINCIPALE DU PANEL ─────────────────────────────────────────────────
+class TicketPanelView(discord.ui.View):
+    def __init__(self): super().__init__(timeout=None)
+
+    @discord.ui.button(label="⚒️ Contacter un Gestion Staff", style=discord.ButtonStyle.blurple, custom_id="ticket_staff", row=0)
+    async def btn_staff(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await open_ticket(interaction, "staff")
+
+    @discord.ui.button(label="🔴 Contacter un Gestion Abus", style=discord.ButtonStyle.red, custom_id="ticket_abus", row=0)
+    async def btn_abus(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await open_ticket(interaction, "abus")
+
+    @discord.ui.button(label="👑 Contacter Kozakura C.O.D", style=discord.ButtonStyle.grey, custom_id="ticket_cod", row=1)
+    async def btn_cod(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await open_ticket(interaction, "cod")
+
+    @discord.ui.button(label="🤝 Contacter Partenariat", style=discord.ButtonStyle.green, custom_id="ticket_partenariat", row=1)
+    async def btn_partenariat(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await open_ticket(interaction, "partenariat")
+
+# ─── FONCTION D'OUVERTURE DE TICKET ──────────────────────────────────────────
+async def open_ticket(interaction: discord.Interaction, ticket_type: str):
+    guild  = interaction.guild
+    author = interaction.user
+    gid    = str(guild.id)
+    cfg    = TICKET_TYPES[ticket_type]
+
+    # Vérifie si l'utilisateur a déjà un ticket ouvert du même type
+    if gid in tickets_db:
+        for tid, tdata in tickets_db[gid].items():
+            if (str(tdata.get("author_id")) == str(author.id)
+                    and tdata.get("status") == "open"
+                    and tdata.get("type") == ticket_type):
+                ch = guild.get_channel(int(tid))
+                if ch:
+                    return await interaction.response.send_message(
+                        f"❌ Tu as déjà un ticket **{cfg['emoji']} {ticket_type}** ouvert : {ch.mention}",
+                        ephemeral=True)
+
+    cat_id   = get_cfg(guild.id, "ticket_category")
+    category = guild.get_channel(int(cat_id)) if cat_id else None
+
+    ticket_number = len(tickets_db.get(gid, {})) + 1
+    channel_name  = f"{ticket_type}-{author.name.lower().replace(' ', '-')}-{ticket_number}"
+
+    overwrites = get_ticket_overwrites(guild, author, ticket_type)
+
+    ticket_channel = await guild.create_text_channel(
+        channel_name, category=category, overwrites=overwrites,
+        topic=f"Ticket {ticket_type} de {author.name} | #{ticket_number}")
+
+    tickets_db.setdefault(gid, {})[str(ticket_channel.id)] = {
+        "author_id":   author.id,
+        "author_name": author.name,
+        "number":      ticket_number,
+        "type":        ticket_type,
+        "status":      "open",
+        "claimed_by":  None,
+        "opened_at":   str(datetime.utcnow()),
+    }
+    save_json("tickets.json", tickets_db)
+
+    # Mention du rôle concerné
+    role_name = cfg["role"]
+    role      = discord.utils.get(guild.roles, name=role_name)
+    role_mention = role.mention if role else f"@{role_name}"
+
+    e = discord.Embed(
+        title=f"{cfg['emoji']} Ticket {ticket_type.capitalize()} #{ticket_number}",
+        description=(
+            f"Bonjour {author.mention} ! 👋\n\n"
+            f"**{cfg['description']}**\n\n"
+            f"Décris ton problème en détail, notre équipe {role_mention} te répondra dès que possible.\n\n"
+            f"{'⚠️ Ce ticket est géré uniquement par **Kozakura C.O.D**.' if ticket_type == 'partenariat' else ''}"
+        ),
+        color=cfg["color"],
+        timestamp=datetime.utcnow()
+    )
+    e.set_footer(text=f"Ticket #{ticket_number} • {author.name}")
+
+    await ticket_channel.send(
+        content=f"{author.mention} {role_mention}",
+        embed=e,
+        view=TicketControlView()
+    )
+
+    await interaction.response.send_message(
+        f"✅ Ton ticket a été créé : {ticket_channel.mention}", ephemeral=True)
+
+    le = discord.Embed(title=f"🎫 Ticket Ouvert — {ticket_type.capitalize()}",
+        description=f"Par {author.mention} → {ticket_channel.mention}",
+        color=cfg["color"], timestamp=datetime.utcnow())
+    le.add_field(name="Ticket", value=f"#{ticket_number}")
+    le.add_field(name="Type",   value=ticket_type.capitalize())
+    le.add_field(name="Membre", value=f"{author} ({author.id})")
+    await log_ticket(guild, le)
+
+# ─── VIEW CONTRÔLES DU TICKET ─────────────────────────────────────────────────
+class TicketControlView(discord.ui.View):
+    def __init__(self): super().__init__(timeout=None)
+
+    @discord.ui.button(label="🔒 Fermer", style=discord.ButtonStyle.red, custom_id="tc_close")
+    async def close_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await interaction.response.send_modal(CloseTicketModal())
+
+    @discord.ui.button(label="✋ Claim", style=discord.ButtonStyle.green, custom_id="tc_claim")
+    async def claim_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        gid = str(interaction.guild_id); tid = str(interaction.channel_id)
+        data = tickets_db.get(gid, {}).get(tid)
+        if not data: return await interaction.response.send_message("❌ Pas un ticket.", ephemeral=True)
+        if data.get("claimed_by"):
+            claimer = interaction.guild.get_member(int(data["claimed_by"]))
+            return await interaction.response.send_message(
+                f"❌ Ce ticket est déjà claim par {claimer.mention if claimer else 'quelqu\'un'}.", ephemeral=True)
+        tickets_db[gid][tid]["claimed_by"] = interaction.user.id
+        save_json("tickets.json", tickets_db)
+        e = discord.Embed(title="✋ Ticket Claim",
+            description=f"{interaction.user.mention} a pris en charge ce ticket.",
+            color=discord.Color.green(), timestamp=datetime.utcnow())
+        await interaction.response.send_message(embed=e)
+        le = discord.Embed(title="✋ Ticket Claim",
+            description=f"Ticket #{data['number']} claim par {interaction.user.mention}",
+            color=discord.Color.green(), timestamp=datetime.utcnow())
+        await log_ticket(interaction.guild, le)
+
+    @discord.ui.button(label="📋 Infos", style=discord.ButtonStyle.grey, custom_id="tc_info")
+    async def info_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        gid = str(interaction.guild_id); tid = str(interaction.channel_id)
+        data = tickets_db.get(gid, {}).get(tid)
+        if not data: return await interaction.response.send_message("❌ Données introuvables.", ephemeral=True)
+        claimer = "Non claim"
+        if data.get("claimed_by"):
+            m = interaction.guild.get_member(int(data["claimed_by"]))
+            claimer = m.mention if m else "Inconnu"
+        e = discord.Embed(title="📋 Infos du Ticket", color=discord.Color.blurple())
+        e.add_field(name="Numéro",  value=f"#{data['number']}")
+        e.add_field(name="Type",    value=data.get("type", "?").capitalize())
+        e.add_field(name="Auteur",  value=data['author_name'])
+        e.add_field(name="Statut",  value="🟢 Ouvert" if data["status"] == "open" else "🔴 Fermé")
+        e.add_field(name="Claim",   value=claimer)
+        e.add_field(name="Ouvert",  value=data["opened_at"][:16])
+        await interaction.response.send_message(embed=e, ephemeral=True)
+
+# ─── MODAL FERMETURE ──────────────────────────────────────────────────────────
+class CloseTicketModal(discord.ui.Modal, title="Fermer le ticket"):
+    reason = discord.ui.TextInput(
+        label="Raison de fermeture",
+        placeholder="Ex: Problème résolu...",
+        style=discord.TextStyle.short,
+        required=False, max_length=200)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild; channel = interaction.channel
+        gid = str(guild.id); tid = str(channel.id)
+        data = tickets_db.get(gid, {}).get(tid)
+        if not data:
+            return await interaction.response.send_message("❌ Pas un ticket valide.", ephemeral=True)
+
+        reason_text = self.reason.value or "Aucune raison"
+        author = guild.get_member(int(data["author_id"])) if data.get("author_id") else None
+
+        tickets_db[gid][tid]["status"]       = "closed"
+        tickets_db[gid][tid]["closed_by"]    = str(interaction.user.id)
+        tickets_db[gid][tid]["closed_at"]    = str(datetime.utcnow())
+        tickets_db[gid][tid]["close_reason"] = reason_text
+        save_json("tickets.json", tickets_db)
+
+        e = discord.Embed(title="🔒 Ticket Fermé",
+            description=f"Fermé par {interaction.user.mention}\n**Raison :** {reason_text}",
+            color=discord.Color.red(), timestamp=datetime.utcnow())
+        await interaction.response.send_message(embed=e)
+
+        if author:
+            await dm(author, "🎫 Ton ticket a été fermé",
+                f"**Serveur :** {guild.name}\n**Ticket :** #{data['number']}\n"
+                f"**Type :** {data.get('type','?').capitalize()}\n**Raison :** {reason_text}\n\n"
+                "Merci d'avoir contacté le support !", color=discord.Color.orange())
+
+        le = discord.Embed(title="🔒 Ticket Fermé",
+            description=f"Fermé par {interaction.user.mention}",
+            color=discord.Color.red(), timestamp=datetime.utcnow())
+        le.add_field(name="Ticket", value=f"#{data['number']}")
+        le.add_field(name="Type",   value=data.get("type","?").capitalize())
+        le.add_field(name="Auteur", value=data["author_name"])
+        le.add_field(name="Raison", value=reason_text, inline=False)
+        await log_ticket(guild, le)
+
+        await asyncio.sleep(10)
+        try:
+            await ai_summarize_ticket(guild, channel, data)
+            await channel.delete()
+        except Exception: pass
+@bot.command()
+@commands.has_permissions(kick_members=True)
+async def claim(ctx):
+    """!claim — Prend en charge le ticket actuel"""
+    gid = str(ctx.guild.id); tid = str(ctx.channel.id)
+    if gid not in tickets_db or tid not in tickets_db[gid]:
+        return await ctx.send("❌ Cette commande s'utilise dans un salon de ticket.")
+
+    data = tickets_db[gid][tid]
+    if data.get("claimed_by"):
+        claimer = ctx.guild.get_member(int(data["claimed_by"]))
+        return await ctx.send(f"❌ Ce ticket est déjà claim par {claimer.mention if claimer else 'quelqu\'un'}.")
+
+    tickets_db[gid][tid]["claimed_by"] = ctx.author.id
+    save_json("tickets.json", tickets_db)
+
+    e = discord.Embed(title="✋ Ticket Claim",
+        description=f"{ctx.author.mention} a pris en charge ce ticket.",
+        color=discord.Color.green(), timestamp=datetime.utcnow())
+    await ctx.send(embed=e)
+
+    le = discord.Embed(title="✋ Ticket Claim",
+        description=f"Ticket #{data['number']} claim par {ctx.author.mention}",
+        color=discord.Color.green(), timestamp=datetime.utcnow())
+    await log_ticket(ctx.guild, le)
+
+@bot.command(name="add")
+@commands.has_permissions(kick_members=True)
+async def ticket_add(ctx, member: discord.Member):
+    """!add @membre — Ajoute un membre au ticket actuel"""
+    gid = str(ctx.guild.id); tid = str(ctx.channel.id)
+    if gid not in tickets_db or tid not in tickets_db[gid]:
+        return await ctx.send("❌ Cette commande s'utilise dans un salon de ticket.")
+
+    await ctx.channel.set_permissions(member,
+        read_messages=True, send_messages=True, attach_files=True)
+
+    e = discord.Embed(title="➕ Membre Ajouté",
+        description=f"{member.mention} a été ajouté au ticket par {ctx.author.mention}",
+        color=discord.Color.green(), timestamp=datetime.utcnow())
+    await ctx.send(embed=e)
+
+    await dm(member, "🎫 Ajouté à un ticket",
+        f"**Serveur :** {ctx.guild.name}\nTu as été ajouté au ticket par {ctx.author}.\nSalon : {ctx.channel.mention}",
+        color=discord.Color.blurple())
+
+    le = discord.Embed(title="➕ Membre Ajouté au Ticket",
+        description=f"{member.mention} ajouté par {ctx.author.mention}",
+        color=discord.Color.green(), timestamp=datetime.utcnow())
+    le.add_field(name="Ticket", value=f"#{tickets_db[gid][tid]['number']}")
+    await log_ticket(ctx.guild, le)
+
+@bot.command(name="remove")
+@commands.has_permissions(kick_members=True)
+async def ticket_remove(ctx, member: discord.Member):
+    """!remove @membre — Retire un membre du ticket actuel"""
+    gid = str(ctx.guild.id); tid = str(ctx.channel.id)
+    if gid not in tickets_db or tid not in tickets_db[gid]:
+        return await ctx.send("❌ Cette commande s'utilise dans un salon de ticket.")
+
+    # Empêche de retirer l'auteur du ticket
+    data = tickets_db[gid][tid]
+    if member.id == int(data["author_id"]):
+        return await ctx.send("❌ Tu ne peux pas retirer l'auteur du ticket.")
+
+    await ctx.channel.set_permissions(member, overwrite=None)
+
+    e = discord.Embed(title="➖ Membre Retiré",
+        description=f"{member.mention} a été retiré du ticket par {ctx.author.mention}",
+        color=discord.Color.orange(), timestamp=datetime.utcnow())
+    await ctx.send(embed=e)
+
+    await dm(member, "🎫 Retiré d'un ticket",
+        f"**Serveur :** {ctx.guild.name}\nTu as été retiré du ticket par {ctx.author}.",
+        color=discord.Color.orange())
+
+    le = discord.Embed(title="➖ Membre Retiré du Ticket",
+        description=f"{member.mention} retiré par {ctx.author.mention}",
+        color=discord.Color.orange(), timestamp=datetime.utcnow())
+    le.add_field(name="Ticket", value=f"#{data['number']}")
+    await log_ticket(ctx.guild, le)
+
+@bot.command()
+@commands.has_permissions(kick_members=True)
+async def closeticket(ctx, *, reason="Aucune raison"):
+    """!closeticket [raison] — Ferme le ticket actuel"""
+    gid = str(ctx.guild.id); tid = str(ctx.channel.id)
+    if gid not in tickets_db or tid not in tickets_db[gid]:
+        return await ctx.send("❌ Cette commande s'utilise dans un salon de ticket.")
+
+    data = tickets_db[gid][tid]
+    tickets_db[gid][tid]["status"]       = "closed"
+    tickets_db[gid][tid]["closed_by"]    = str(ctx.author.id)
+    tickets_db[gid][tid]["closed_at"]    = str(datetime.utcnow())
+    tickets_db[gid][tid]["close_reason"] = reason
+    save_json("tickets.json", tickets_db)
+
+    author = ctx.guild.get_member(int(data["author_id"]))
+    e = discord.Embed(title="🔒 Ticket Fermé",
+        description=f"Fermé par {ctx.author.mention}\n**Raison :** {reason}",
+        color=discord.Color.red(), timestamp=datetime.utcnow())
+    await ctx.send(embed=e)
+
+    if author:
+        await dm(author, "🎫 Ton ticket a été fermé",
+            f"**Serveur :** {ctx.guild.name}\n**Ticket :** #{data['number']}\n"
+            f"**Type :** {data.get('type','?').capitalize()}\n**Raison :** {reason}\n\n"
+            "Merci d'avoir contacté le support !", color=discord.Color.orange())
+
+    le = discord.Embed(title="🔒 Ticket Fermé", description=f"Fermé par {ctx.author.mention}",
+        color=discord.Color.red(), timestamp=datetime.utcnow())
+    le.add_field(name="Ticket", value=f"#{data['number']}")
+    le.add_field(name="Raison", value=reason, inline=False)
+    await log_ticket(ctx.guild, le)
+
+    await asyncio.sleep(10)
+    try: await ctx.channel.delete()
+    except Exception: pass
+
+@bot.command(name="tickets")
+@commands.has_permissions(kick_members=True)
+async def list_tickets(ctx):
+    """!tickets — Liste tous les tickets ouverts"""
+    gid = str(ctx.guild.id)
+    data = tickets_db.get(gid, {})
+    open_tickets = [(tid, t) for tid, t in data.items() if t.get("status") == "open"]
+
+    e = discord.Embed(title=f"🎫 Tickets Ouverts ({len(open_tickets)})",
+        color=discord.Color.blurple(), timestamp=datetime.utcnow())
+
+    if not open_tickets:
+        e.description = "Aucun ticket ouvert en ce moment ✅"
+    else:
+        for tid, t in open_tickets[:15]:
+            ch = ctx.guild.get_channel(int(tid))
+            claim_status = "Non claim"
+            if t.get("claimed_by"):
+                m = ctx.guild.get_member(int(t["claimed_by"]))
+                claim_status = f"✋ {m.name if m else 'Inconnu'}"
+            e.add_field(
+                name=f"#{t['number']} [{t.get('type','?').upper()}] — {t['author_name']}",
+                value=f"Salon: {ch.mention if ch else 'Supprimé'}\nClaim: {claim_status}",
+                inline=True)
+    await ctx.send(embed=e)
+
+# ─── PANEL ADMIN ──────────────────────────────────────────────────────────────
+class AdminPanel(discord.ui.View):
+    def __init__(self): super().__init__(timeout=180)
+
+    @discord.ui.button(label="📊 Stats", style=discord.ButtonStyle.blurple)
+    async def btn_stats(self, i: discord.Interaction, _: discord.ui.Button):
+        g = i.guild
+        bots = sum(1 for m in g.members if m.bot)
+        online = sum(1 for m in g.members if m.status != discord.Status.offline and not m.bot)
+        vocal = sum(len(vc.members) for vc in g.voice_channels)
+        e = discord.Embed(title="📊 Stats", color=discord.Color.blurple())
+        e.add_field(name="👥 Membres", value=g.member_count - bots)
+        e.add_field(name="🟢 En ligne", value=online)
+        e.add_field(name="🎙️ Vocal", value=vocal)
+        await i.response.send_message(embed=e, ephemeral=True)
+
+    @discord.ui.button(label="⚠️ Top Warns", style=discord.ButtonStyle.red)
+    async def btn_warns(self, i: discord.Interaction, _: discord.ui.Button):
+        gid = str(i.guild.id); data = warnings_db.get(gid, {})
+        top = sorted(data.items(), key=lambda x: len(x[1]), reverse=True)[:5]
+        e = discord.Embed(title="⚠️ Top Avertissements", color=discord.Color.orange())
+        for uid, ws in top:
+            m = i.guild.get_member(int(uid))
+            e.add_field(name=m.name if m else uid, value=f"{len(ws)} warn(s)", inline=False)
+        await i.response.send_message(embed=e, ephemeral=True)
+
+    @discord.ui.button(label="🏆 Top XP", style=discord.ButtonStyle.green)
+    async def btn_xp(self, i: discord.Interaction, _: discord.ui.Button):
+        gid = str(i.guild.id)
+        top = sorted(xp_db.get(gid, {}).items(), key=lambda x: x[1], reverse=True)[:5]
+        e = discord.Embed(title="🏆 Top 5 XP", color=discord.Color.gold())
+        for idx, (uid, xp) in enumerate(top, 1):
+            m = i.guild.get_member(int(uid))
+            e.add_field(name=f"#{idx} {m.name if m else uid}",
+                value=f"Niv.{get_level(xp)} | {xp} XP", inline=False)
+        await i.response.send_message(embed=e, ephemeral=True)
+
+    @discord.ui.button(label="🎫 Tickets", style=discord.ButtonStyle.grey)
+    async def btn_tickets(self, i: discord.Interaction, _: discord.ui.Button):
+        gid = str(i.guild.id); data = tickets_db.get(gid, {})
+        open_t = [(tid, t) for tid, t in data.items() if t.get("status") == "open"]
+        e = discord.Embed(title=f"🎫 Tickets Ouverts ({len(open_t)})", color=discord.Color.blurple())
+        if not open_t: e.description = "Aucun ticket ouvert ✅"
+        else:
+            for tid, t in open_t[:10]:
+                ch = i.guild.get_channel(int(tid))
+                e.add_field(name=f"#{t['number']} [{t.get('type','?').upper()}] — {t['author_name']}",
+                    value=ch.mention if ch else "Supprimé", inline=True)
+        await i.response.send_message(embed=e, ephemeral=True)
+
+    @discord.ui.button(label="⚙️ Config", style=discord.ButtonStyle.grey)
+    async def btn_config(self, i: discord.Interaction, _: discord.ui.Button):
+        gid = str(i.guild.id); cfg = config_db.get(gid, {})
+        e = discord.Embed(title="⚙️ Config actuelle", color=discord.Color.greyple())
+        for k, v in cfg.items():
+            ch = i.guild.get_channel(int(v)) if isinstance(v, int) else None
+            e.add_field(name=k, value=ch.mention if ch else str(v), inline=False)
+        await i.response.send_message(embed=e, ephemeral=True)
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def panel(ctx):
+    e = discord.Embed(title="🛠️ Panel Admin", color=discord.Color.blurple(),
+        description="Gère ton serveur facilement avec les boutons ci-dessous.")
+    await ctx.send(embed=e, view=AdminPanel())
+
+# ─── SLASH COMMANDS ───────────────────────────────────────────────────────────
+@bot.tree.command(name="rank", description="Affiche ton niveau XP")
+async def sl_rank(i: discord.Interaction, member: discord.Member = None):
+    member = member or i.user
+    xp = xp_db.get(str(i.guild_id), {}).get(str(member.id), 0); lvl = get_level(xp)
+    e = discord.Embed(title=f"🏆 {member.name}", color=discord.Color.gold())
+    e.add_field(name="Niveau", value=lvl); e.add_field(name="XP", value=f"{xp} / {xp_for_level(lvl+1)}")
+    e.set_thumbnail(url=member.display_avatar.url)
+    await i.response.send_message(embed=e)
+
+@bot.tree.command(name="stats", description="Statistiques du serveur")
+async def sl_stats(i: discord.Interaction):
+    g = i.guild
+    bots = sum(1 for m in g.members if m.bot)
+    online = sum(1 for m in g.members if m.status != discord.Status.offline and not m.bot)
+    vocal = sum(len(vc.members) for vc in g.voice_channels)
+    e = discord.Embed(title=f"📊 {g.name}", color=discord.Color.blurple())
+    e.add_field(name="👥 Membres", value=g.member_count - bots)
+    e.add_field(name="🟢 En ligne", value=online)
+    e.add_field(name="🎙️ En vocal", value=vocal)
+    await i.response.send_message(embed=e)
+
+@bot.tree.command(name="warn", description="Avertir un membre")
+@app_commands.describe(member="Le membre", reason="La raison")
+@app_commands.checks.has_permissions(kick_members=True)
+async def sl_warn(i: discord.Interaction, member: discord.Member, reason: str = "Aucune raison"):
+    gid = str(i.guild_id); uid = str(member.id)
+    warnings_db.setdefault(gid, {}).setdefault(uid, []).append(
+        {"reason": reason, "by": str(i.user.id), "date": str(datetime.utcnow())})
+    save_json("warnings.json", warnings_db)
+    count = len(warnings_db[gid][uid])
+    e = discord.Embed(title="⚠️ Avertissement",
+        description=f"{member.mention} averti ({count} total)", color=discord.Color.yellow())
+    e.add_field(name="Raison", value=reason)
+    await i.response.send_message(embed=e)
+    await dm(member, f"⚠️ Avertissement ({count})",
+        f"**Serveur :** {i.guild.name}\n**Raison :** {reason}")
+
+@bot.tree.command(name="panel", description="Panel d'administration")
+@app_commands.checks.has_permissions(administrator=True)
+async def sl_panel(i: discord.Interaction):
+    e = discord.Embed(title="🛠️ Panel Admin", color=discord.Color.blurple())
+    await i.response.send_message(embed=e, view=AdminPanel(), ephemeral=True)
+
+# ─── AIDE ─────────────────────────────────────────────────────────────────────
+@bot.command()
+async def help(ctx, categorie: str = None):
+    """!help [catégorie] — Affiche l'aide complète ou d'une catégorie"""
+
+    categories = {
+        "mod":        "🔨 Modération",
+        "sanctions":  "📋 Sanctions",
+        "roles":      "🎭 Rôles",
+        "rank":       "🎖️ Rank/Derank",
+        "tickets":    "🎫 Tickets",
+        "tribunal":   "⚖️ Tribunal",
+        "xp":         "🏆 XP / Niveaux",
+        "trophees":   "🏅 Trophées",
+        "communaute": "💬 Communauté",
+        "texte":      "📝 Texte",
+        "massban":    "💥 Mass Ban",
+        "admin":      "⚙️ Admin",
+        "slash":      "⚡ Slash",
+        "ia":         "🤖 Intelligence Artificielle",
+        "stats":      "📊 Stats & Rapports",
+        "securite":   "🔒 Sécurité Avancée",
+    }
+
+    if categorie and categorie.lower() in categories:
+        cat = categorie.lower()
+        e = discord.Embed(color=discord.Color.blurple(), timestamp=datetime.utcnow())
+        e.set_footer(text=f"!help pour revenir au menu • Préfixe : {PREFIX}")
+
+        if cat == "mod":
+            e.title = "🔨 Modération"
+            e.add_field(name="!ban @membre [raison]",    value="Bannit un membre (MP envoyé avant)", inline=False)
+            e.add_field(name="!unban [id] [raison]",     value="Débannit un utilisateur par ID", inline=False)
+            e.add_field(name="!kick @membre [raison]",   value="Expulse un membre", inline=False)
+            e.add_field(name="!mute @membre [min] [raison]", value="Mute un membre (défaut 10 min)", inline=False)
+            e.add_field(name="!unmute @membre",          value="Démute un membre", inline=False)
+            e.add_field(name="!warn @membre [raison]",   value="Avertit un membre", inline=False)
+            e.add_field(name="!warnings [@membre]",      value="Voir les avertissements", inline=False)
+            e.add_field(name="!clearwarns @membre",      value="Réinitialise les avertissements", inline=False)
+            e.add_field(name="!purge [n]",               value="Supprime N messages (max 100)", inline=False)
+            e.add_field(name="!clear [n] ou !clear @membre [n]", value="Supprime N messages ou ceux d'un membre", inline=False)
+            e.add_field(name="!slowmode [secondes]",     value="Active/désactive le slowmode", inline=False)
+
+        elif cat == "sanctions":
+            e.title = "📋 Sanctions"
+            e.add_field(name="!infosanction @membre",    value="Voir toutes les sanctions d'un membre (ban, kick, mute, warn)", inline=False)
+            e.add_field(name="!clearsanctions @membre",  value="Efface l'historique de sanctions (admin)", inline=False)
+            e.description = "Toutes les sanctions sont automatiquement envoyées dans le salon **sanction** et dans les logs."
+
+        elif cat == "roles":
+            e.title = "🎭 Rôles"
+            e.add_field(name="!addrole @membre @role",   value="Donne un rôle à un membre", inline=False)
+            e.add_field(name="!delrole @membre @role",   value="Retire un rôle à un membre", inline=False)
+            e.add_field(name="!reactionrole [emoji] @role [desc]", value="Crée un rôle par réaction", inline=False)
+            e.add_field(name="!setautorole @role",       value="Rôle donné automatiquement à l'arrivée", inline=False)
+
+        elif cat == "rank":
+            e.title = "🎖️ Rank / Derank"
+            e.description = (
+                "Hiérarchie : `*** Mirai` → `** Taiyō` → `* Hoshi` → `III Shin` → `II Tsuki` → `I Kage`\n"
+                "Chaque rang attribue automatiquement le grade **et** le titre."
+            )
+            e.add_field(name="!rankup @membre [raison]",       value="Monte le membre d'un rang ⬆️", inline=False)
+            e.add_field(name="!derank @membre [raison]",       value="Descend le membre d'un rang ⬇️", inline=False)
+            e.add_field(name="!setrank @membre [1-6] [raison]",value="Définit directement un rang (1=***, 6=I)", inline=False)
+            e.add_field(name="!removerank @membre [raison]",   value="Retire tous les rangs", inline=False)
+            e.add_field(name="!ranglist",                      value="Affiche la hiérarchie des rangs", inline=False)
+
+        elif cat == "tickets":
+            e.title = "🎫 Tickets"
+            e.description = "4 types : **Gestion Staff** | **Gestion Abus** | **Kozakura C.O.D** | **Partenariat**"
+            e.add_field(name="!ticketpanel",                   value="Envoie le panel avec les 4 boutons", inline=False)
+            e.add_field(name="!tickets",                       value="Liste tous les tickets ouverts", inline=False)
+            e.add_field(name="!claim",                         value="Prendre en charge le ticket actuel ✋", inline=False)
+            e.add_field(name="!add @membre",                   value="Ajouter un membre au ticket", inline=False)
+            e.add_field(name="!remove @membre",                value="Retirer un membre du ticket", inline=False)
+            e.add_field(name="!closeticket [raison]",          value="Fermer le ticket actuel", inline=False)
+            e.add_field(name="!setticketcategory [nom]",       value="Définit la catégorie des tickets (admin)", inline=False)
+            e.add_field(name="!setticketlog #salon",           value="Définit le salon de logs tickets (admin)", inline=False)
+
+        elif cat == "tribunal":
+            e.title = "⚖️ Tribunal"
+            e.description = f"Nécessite le rôle **{ROLE_JUGE}** pour voter et ouvrir.\n**{VOTES_NECESSAIRES} votes** nécessaires pour valider."
+            e.add_field(name="!tribunal @membre [ban/kick/mute] [motif]", value="Ouvre un vote tribunal dans #tribunal", inline=False)
+            e.add_field(name="Bouton Pour ✅",   value="Vote pour la sanction", inline=False)
+            e.add_field(name="Bouton Contre ❌", value="Vote contre la sanction", inline=False)
+            e.add_field(name="Bouton Bannir 🔨", value="Exécute la sanction si assez de votes Pour", inline=False)
+
+        elif cat == "xp":
+            e.title = "🏆 XP / Niveaux"
+            e.description = f"Chaque message rapporte **{XP_PER_MSG} XP** (cooldown {XP_COOLDOWN}s). Les passages de niveau s'affichent dans **⭐・niveaux**."
+            e.add_field(name="!rank [@membre]",    value="Affiche le niveau et XP d'un membre", inline=False)
+            e.add_field(name="!leaderboard",       value="Top 10 XP du serveur", inline=False)
+
+        elif cat == "trophees":
+            e.title = "🏅 Trophées"
+            e.description = "Badges automatiques selon les votes, le temps vocal et les boosts."
+            e.add_field(name="!trophe [@membre]",           value="Affiche le trophée d'un membre", inline=False)
+            e.add_field(name="!topvotes",                   value="Classement par votes", inline=False)
+            e.add_field(name="!topvocal",                   value="Classement par temps vocal", inline=False)
+            e.add_field(name="!addvote @membre [n]",        value="Ajoute des votes (admin)", inline=False)
+            e.add_field(name="!removevote @membre [n]",     value="Retire des votes (admin)", inline=False)
+            e.add_field(name="!settrophees #salon",         value="Définit le salon des trophées (admin)", inline=False)
+            e.add_field(name="🎖️ Badges Votes",
+                value="🌱 Débutant → 📊 10 → 🥉 50 → 🥈 100 → 🥇 200 → 🏆 500", inline=False)
+            e.add_field(name="🎖️ Badges Vocal",
+                value="🔈 10h → 🎤 50h → 📢 100h → 🔊 200h → 🎙️ 500h", inline=False)
+
+        elif cat == "communaute":
+            e.title = "💬 Communauté"
+            e.add_field(name="!suggest [texte]",              value="Envoie une suggestion", inline=False)
+            e.add_field(name="!poll [question] [opt1] [opt2]", value="Crée un sondage (max 10 options)", inline=False)
+            e.add_field(name="!stats",                        value="Statistiques du serveur", inline=False)
+            e.add_field(name="!remind [n] [s/min/h/j] [msg]", value="Crée un rappel", inline=False)
+            e.add_field(name="!rank [@membre]",               value="Ton niveau XP", inline=False)
+            e.add_field(name="!leaderboard",                  value="Top 10 XP", inline=False)
+            e.add_field(name="!ranglist",                     value="Hiérarchie des rangs", inline=False)
+
+        elif cat == "texte":
+            e.title = "📝 Texte & Embeds"
+            e.add_field(name='!text [contenu]',
+                value="Envoie un message permanent.\nSauts de ligne avec Shift+Entrée.", inline=False)
+            e.add_field(name='!embed "Titre" [couleur] [contenu]',
+                value="Envoie un embed coloré permanent.\nCouleurs : `rouge` `vert` `bleu` `or` `violet` `orange` `gris`", inline=False)
+
+        elif cat == "massban":
+            e.title = "💥 Mass Ban"
+            e.add_field(name="!massban @u1 @u2 @u3 [raison]", value="Prépare un mass ban (confirmation requise)", inline=False)
+            e.add_field(name="!massbanconfirm",                value="Exécute le mass ban préparé", inline=False)
+            e.add_field(name="!massbancancel",                 value="Annule le mass ban en attente", inline=False)
+
+        elif cat == "admin":
+            e.title = "⚙️ Administration"
+            e.add_field(name="!panel",                  value="Panel admin interactif", inline=False)
+            e.add_field(name="!setlog #salon",          value="Salon de logs général", inline=False)
+            e.add_field(name="!setwelcome #salon",      value="Salon de bienvenue", inline=False)
+            e.add_field(name="!setwelcomemsg [msg]",    value="Message de bienvenue ({user} {server} {count})", inline=False)
+            e.add_field(name="!setautorole @role",      value="Rôle automatique à l'arrivée", inline=False)
+            e.add_field(name="!setsuggestions #salon",  value="Salon des suggestions", inline=False)
+            e.add_field(name="!setraidthreshold [n]",   value="Seuil anti-raid (joins/10s)", inline=False)
+            e.add_field(name="!setinvite [lien]",       value="Lien d'invitation du serveur", inline=False)
+            e.add_field(name="!setupcounters",          value="Crée les salons compteurs", inline=False)
+            e.add_field(name="!addcmd [trigger] [réponse]", value="Ajoute une commande personnalisée", inline=False)
+            e.add_field(name="!delcmd [trigger]",       value="Supprime une commande personnalisée", inline=False)
+            e.add_field(name="!addbanword [mot]",       value="Ajoute un mot à la liste noire", inline=False)
+
+        elif cat == "slash":
+            e.title = "⚡ Slash Commands"
+            e.add_field(name="/rank [@membre]", value="Niveau XP", inline=False)
+            e.add_field(name="/stats",          value="Stats du serveur", inline=False)
+            e.add_field(name="/warn @membre",   value="Avertir un membre", inline=False)
+            e.add_field(name="/panel",          value="Panel admin (éphémère)", inline=False)
+
+        elif cat == "ia":
+            e.title = "🤖 Intelligence Artificielle"
+            e.description = "Powered by **Groq • Llama 3** — Mentionne le bot ou écris dans `🧠・ia`"
+            e.add_field(name="@Kozakura [message]",     value="Parle directement au bot n'importe où", inline=False)
+            e.add_field(name="!ai [question]",          value="Pose une question à l'IA", inline=False)
+            e.add_field(name="!imagine [description]",  value="Génère une description visuelle détaillée", inline=False)
+            e.add_field(name="!traduis [langue] [texte]", value="Traduit dans n'importe quelle langue\nEx: `!traduis anglais Bonjour`", inline=False)
+            e.add_field(name="!moderia @membre [raison]", value="L'IA analyse et propose une sanction (staff)", inline=False)
+            e.add_field(name="!announce [sujet]",       value="Génère une annonce avec confirmation (admin)", inline=False)
+            e.add_field(name="!resume [nb]",            value="Résume les X derniers messages du salon", inline=False)
+            e.add_field(name="!analyse @membre",        value="Analyse le comportement d'un membre", inline=False)
+            e.add_field(name="!clearmemory",            value="Efface ta mémoire de conversation avec l'IA", inline=False)
+            e.add_field(name="🧠 Réponses adaptatives",
+                value="• **Nouveau** (<7j) → accueillant\n• **Vétéran** (>180j) → familier\n• **Sanctionné** → neutre", inline=False)
+
+        elif cat == "stats":
+            e.title = "📊 Stats & Rapports"
+            e.add_field(name="!activite [@membre]",
+                value="Fiche complète : XP, niveau, vocal, sanctions, ancienneté, rôles", inline=False)
+            e.add_field(name="!rapport",
+                value="Génère le rapport hebdomadaire maintenant (admin)", inline=False)
+            e.add_field(name="📅 Rapport automatique",
+                value="Envoyé chaque **lundi à 9h** dans le salon staff\nContient : top XP, top vocal, sanctions de la semaine", inline=False)
+
+        elif cat == "securite":
+            e.title = "🔒 Sécurité Avancée"
+            e.description = "Système de sécurité multicouche — Kozakura Security"
+            e.add_field(name="🚨 Anti-Nuke",
+                value="Détection auto si quelqu'un supprime salons/rôles/ban en masse → rôles dangereux retirés", inline=False)
+            e.add_field(name="👤 Comptes suspects",
+                value="Alerte automatique si un compte < 7 jours ou sans avatar rejoint", inline=False)
+            e.add_field(name="🔔 Anti-mentions",
+                value="Mute 30min auto si spam @mentions ou @everyone", inline=False)
+            e.add_field(name="🎙️ Anti-spam vocal",
+                value="Mute 10min si rejoindre/quitter le vocal 5x en 30s", inline=False)
+            e.add_field(name="⚠️ Usurpation identité",
+                value="Alerte si un membre change de pseudo pour ressembler au staff", inline=False)
+            e.add_field(name="🤖 Détection menaces IA",
+                value="Analyse contextuelle des messages suspects", inline=False)
+            e.add_field(name="🧊 !freeze @membre",         value="Coupe toutes les permissions sans bannir", inline=False)
+            e.add_field(name="🔓 !unfreeze @membre",       value="Restaure les permissions", inline=False)
+            e.add_field(name="🔍 !whois @membre",          value="Enquête complète + score de risque", inline=False)
+            e.add_field(name="🍯 !sethoneypot [#salon]",   value="Salon piège — alerte si quelqu'un y écrit", inline=False)
+            e.add_field(name="💾 !backup",                 value="Sauvegarde la structure du serveur", inline=False)
+            e.add_field(name="♻️ !restorebackup",          value="Restaure les salons/rôles depuis le backup", inline=False)
+            e.add_field(name="🔒 !lockdown [raison]",      value="Verrouille tous les salons d'urgence", inline=False)
+            e.add_field(name="🔓 !unlockdown",             value="Lève le lockdown", inline=False)
+            e.add_field(name="🔬 !quarantaine @membre",    value="Accès très limité sans bannir", inline=False)
+            e.add_field(name="✅ !unquarantaine @membre",  value="Libère de la quarantaine", inline=False)
+            e.add_field(name="📊 !securitystatus",         value="Vue d'ensemble de la sécurité", inline=False)
+            e.add_field(name="⚙️ !setminage [jours]",     value="Âge minimum des comptes", inline=False)
+            e.add_field(name="📋 !setsecuritylog #salon",  value="Salon de logs sécurité dédié", inline=False)
+
+        elif cat == "securite":
+            e.title = "🔒 Sécurité Avancée"
+            e.description = "Système de sécurité complet — Kozakura Security"
+            e.add_field(name="🚨 Anti-Nuke", value="Détection auto si quelqu'un supprime salons/rôles en masse → rôles retirés automatiquement", inline=False)
+            e.add_field(name="👤 Comptes suspects", value="Alerte automatique à l'arrivée si compte < 7j ou sans avatar", inline=False)
+            e.add_field(name="🔔 Anti-mentions", value="Mute 30min auto si spam de mentions ou @everyone", inline=False)
+            e.add_field(name="🎙️ Anti-spam vocal", value="Mute 10min auto si rejoindre/quitter 5x en 30s", inline=False)
+            e.add_field(name="🤖 Détection menaces IA", value="Analyse contextuelle des messages menaçants", inline=False)
+            e.add_field(name="🔒 !lockdown [raison]", value="Verrouille tous les salons immédiatement", inline=False)
+            e.add_field(name="🔓 !unlockdown", value="Lève le lockdown", inline=False)
+            e.add_field(name="🧊 !freeze @membre", value="Coupe toutes les permissions sans bannir", inline=False)
+            e.add_field(name="🔥 !unfreeze @membre", value="Restaure les permissions d'un membre gelé", inline=False)
+            e.add_field(name="🍯 !sethoneypot [#salon]", value="Crée un salon piège — alerte + ban auto si quelqu'un écrit dedans", inline=False)
+            e.add_field(name="🔍 !whois @membre", value="Enquête complète : historique, risques, sanctions, rôles", inline=False)
+            e.add_field(name="💾 !backup", value="Sauvegarde la structure du serveur (rôles, salons)", inline=False)
+            e.add_field(name="♻️ !restorebackup", value="Restaure les rôles manquants depuis le dernier backup", inline=False)
+            e.add_field(name="🔒 !quarantine @membre", value="Met en quarantaine (accès limité)", inline=False)
+            e.add_field(name="🕵️ Détection usurpation", value="Alerte auto si un membre change de pseudo pour ressembler au staff", inline=False)
+            e.add_field(name="📊 !securitystatus", value="Vue d'ensemble de la sécurité du serveur", inline=False)
+            e.add_field(name="⚙️ Config",
+                value="`!setsecuritylog #salon` — Salon logs sécurité\n`!setminage [jours]` — Âge minimum comptes\n`!setantibotprotection on/off` — Anti-bot",
+                inline=False)
+
+        await ctx.send(embed=e)
+        return
+
+    # ── Menu principal ──────────────────────────────────────────────────────
+    e = discord.Embed(
+        title="📖 Aide — Kozakura Bot",
+        description=(
+            f"Préfixe : `{PREFIX}` | Slash : `/`\n"
+            f"Tape `!help [catégorie]` pour les détails.\n\u200b"
+        ),
+        color=discord.Color.blurple(),
+        timestamp=datetime.utcnow()
+    )
+    if ctx.guild.icon:
+        e.set_thumbnail(url=ctx.guild.icon.url)
+
+    e.add_field(name="🔨 `!help mod`",        value="Ban, kick, mute, warn, clear, purge...", inline=True)
+    e.add_field(name="📋 `!help sanctions`",   value="Infosanction, historique", inline=True)
+    e.add_field(name="🎭 `!help roles`",       value="Addrole, delrole, reactionrole", inline=True)
+    e.add_field(name="🎖️ `!help rank`",        value="Rankup, derank, setrank, ranglist", inline=True)
+    e.add_field(name="🎫 `!help tickets`",     value="Panel, claim, add, remove, close", inline=True)
+    e.add_field(name="⚖️ `!help tribunal`",    value="Vote tribunal avec rôle juge", inline=True)
+    e.add_field(name="🏆 `!help xp`",          value="Rank, leaderboard, niveaux", inline=True)
+    e.add_field(name="🏅 `!help trophees`",    value="Trophées, votes, vocal, badges", inline=True)
+    e.add_field(name="💬 `!help communaute`",  value="Suggest, poll, stats, remind", inline=True)
+    e.add_field(name="📝 `!help texte`",       value="Text, embed permanent", inline=True)
+    e.add_field(name="💥 `!help massban`",     value="Mass ban avec confirmation", inline=True)
+    e.add_field(name="⚙️ `!help admin`",       value="Config, logs, compteurs...", inline=True)
+    e.add_field(name="⚡ `!help slash`",       value="Slash commands disponibles", inline=True)
+    e.add_field(name="🤖 `!help ia`",          value="IA, imagine, traduis, moderation IA...", inline=True)
+    e.add_field(name="📊 `!help stats`",       value="Activité membre, rapport hebdo...", inline=True)
+    e.add_field(name="🔒 `!help securite`",    value="Lockdown, freeze, honeypot, whois, backup...", inline=True)
+
+    e.set_footer(text=f"Kozakura Bot • {ctx.guild.name}")
+    await ctx.send(embed=e)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 📁 SYSTÈME RANK / DERANK
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Hiérarchie des rangs : (rôle grade, rôle titre) du plus haut au plus bas
+# Modifie les noms ici s'ils sont différents dans ton serveur
+RANGS = [
+    ("***", "Mirai"),
+    ("**",  "Taiyō"),
+    ("*",   "Hoshi"),
+    ("III", "Shin"),
+    ("II",  "Tsuki"),
+    ("I",   "Kage"),
+]
+
+def get_rang_actuel(member):
+    """Retourne (index, grade_role, titre_role) du rang actuel du membre, ou None"""
+    for i, (grade, titre) in enumerate(RANGS):
+        grade_role = discord.utils.get(member.guild.roles, name=grade)
+        titre_role = discord.utils.get(member.guild.roles, name=titre)
+        if grade_role and grade_role in member.roles:
+            return i, grade_role, titre_role
+    return None
+
+async def log_rankderank(guild, embed):
+    """Envoie le log dans 📁・rank-derank"""
+    ch = discord.utils.find(
+        lambda c: "rank-derank" in c.name.lower(), guild.text_channels)
+    if ch: await ch.send(embed=embed)
+
+@bot.command(name="rankup")
+@commands.has_permissions(manage_roles=True)
+async def rank_up(ctx, member: discord.Member, *, reason: str = "Aucune raison"):
+    """!rankup @membre [raison] — Monte le membre d'un rang"""
+    guild = ctx.guild
+    rang  = get_rang_actuel(member)
+
+    # Trouver le prochain rang
+    if rang is None:
+        # Pas de rang → donner le rang le plus bas (index 5 = I / Kage)
+        next_idx = len(RANGS) - 1
+    else:
+        current_idx = rang[0]
+        if current_idx == 0:
+            return await ctx.send(f"❌ {member.mention} est déjà au rang maximum (***** / Mirai**).")
+        next_idx = current_idx - 1
+
+    new_grade_name, new_titre_name = RANGS[next_idx]
+    new_grade = discord.utils.get(guild.roles, name=new_grade_name)
+    new_titre = discord.utils.get(guild.roles, name=new_titre_name)
+
+    if not new_grade or not new_titre:
+        return await ctx.send(
+            f"❌ Rôles introuvables : **{new_grade_name}** et/ou **{new_titre_name}**.\n"
+            "Vérifie que les noms correspondent exactement aux rôles Discord.")
+
+    # Retirer l'ancien rang si existant
+    if rang:
+        old_grade, old_titre = rang[1], rang[2]
+        try:
+            roles_to_remove = [r for r in [old_grade, old_titre] if r and r in member.roles]
+            if roles_to_remove: await member.remove_roles(*roles_to_remove)
+        except Exception: pass
+
+    # Donner le nouveau rang
+    try:
+        roles_to_add = [r for r in [new_grade, new_titre] if r]
+        await member.add_roles(*roles_to_add)
+    except discord.Forbidden:
+        return await ctx.send("❌ Je n'ai pas la permission de gérer ces rôles. Vérifie ma hiérarchie.")
+
+    old_name = f"{RANGS[rang[0]][0]} / {RANGS[rang[0]][1]}" if rang else "Aucun"
+    new_name  = f"{new_grade_name} / {new_titre_name}"
+
+    e = discord.Embed(
+        title="📈 Rank Up",
+        description=f"{member.mention} a été **promu** par {ctx.author.mention}",
+        color=discord.Color.green(),
+        timestamp=datetime.utcnow()
+    )
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.add_field(name="Ancien rang", value=old_name)
+    e.add_field(name="Nouveau rang", value=f"✨ **{new_name}**")
+    e.add_field(name="Raison", value=reason, inline=False)
+    e.set_footer(text=f"Par {ctx.author.display_name}")
+
+    await ctx.send(embed=e)
+    await log_rankderank(guild, e)
+
+    # MP au membre
+    await dm(member, "📈 Tu as été promu !",
+        f"**Serveur :** {guild.name}\n**Nouveau rang :** {new_name}\n**Raison :** {reason}",
+        color=discord.Color.green())
+
+@bot.command(name="derank")
+@commands.has_permissions(manage_roles=True)
+async def derank_down(ctx, member: discord.Member, *, reason: str = "Aucune raison"):
+    """!derank @membre [raison] — Rétrograde le membre d'un rang"""
+    guild = ctx.guild
+    rang  = get_rang_actuel(member)
+
+    if rang is None:
+        return await ctx.send(f"❌ {member.mention} n'a aucun rang à retirer.")
+
+    current_idx = rang[0]
+
+    # Rang le plus bas → retirer complètement
+    if current_idx == len(RANGS) - 1:
+        old_grade, old_titre = rang[1], rang[2]
+        try:
+            roles_to_remove = [r for r in [old_grade, old_titre] if r and r in member.roles]
+            if roles_to_remove: await member.remove_roles(*roles_to_remove)
+        except discord.Forbidden:
+            return await ctx.send("❌ Je n'ai pas la permission de gérer ces rôles.")
+
+        old_name = f"{RANGS[current_idx][0]} / {RANGS[current_idx][1]}"
+        e = discord.Embed(
+            title="📉 Derank",
+            description=f"{member.mention} a été **rétrogradé** par {ctx.author.mention}",
+            color=discord.Color.red(),
+            timestamp=datetime.utcnow()
+        )
+        e.set_thumbnail(url=member.display_avatar.url)
+        e.add_field(name="Ancien rang", value=old_name)
+        e.add_field(name="Nouveau rang", value="❌ Aucun rang")
+        e.add_field(name="Raison", value=reason, inline=False)
+        e.set_footer(text=f"Par {ctx.author.display_name}")
+        await ctx.send(embed=e)
+        await log_rankderank(guild, e)
+        await dm(member, "📉 Tu as été rétrogradé",
+            f"**Serveur :** {guild.name}\n**Ancien rang :** {old_name}\n**Tu n'as plus de rang.**\n**Raison :** {reason}",
+            color=discord.Color.red())
+        return
+
+    # Rang suivant (plus bas)
+    next_idx = current_idx + 1
+    new_grade_name, new_titre_name = RANGS[next_idx]
+    new_grade = discord.utils.get(guild.roles, name=new_grade_name)
+    new_titre = discord.utils.get(guild.roles, name=new_titre_name)
+
+    if not new_grade or not new_titre:
+        return await ctx.send(
+            f"❌ Rôles introuvables : **{new_grade_name}** et/ou **{new_titre_name}**.\n"
+            "Vérifie que les noms correspondent exactement aux rôles Discord.")
+
+    # Retirer l'ancien rang
+    old_grade, old_titre = rang[1], rang[2]
+    try:
+        roles_to_remove = [r for r in [old_grade, old_titre] if r and r in member.roles]
+        if roles_to_remove: await member.remove_roles(*roles_to_remove)
+    except Exception: pass
+
+    # Donner le rang inférieur
+    try:
+        roles_to_add = [r for r in [new_grade, new_titre] if r]
+        await member.add_roles(*roles_to_add)
+    except discord.Forbidden:
+        return await ctx.send("❌ Je n'ai pas la permission de gérer ces rôles.")
+
+    old_name = f"{RANGS[current_idx][0]} / {RANGS[current_idx][1]}"
+    new_name  = f"{new_grade_name} / {new_titre_name}"
+
+    e = discord.Embed(
+        title="📉 Derank",
+        description=f"{member.mention} a été **rétrogradé** par {ctx.author.mention}",
+        color=discord.Color.red(),
+        timestamp=datetime.utcnow()
+    )
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.add_field(name="Ancien rang", value=old_name)
+    e.add_field(name="Nouveau rang", value=f"⬇️ **{new_name}**")
+    e.add_field(name="Raison", value=reason, inline=False)
+    e.set_footer(text=f"Par {ctx.author.display_name}")
+
+    await ctx.send(embed=e)
+    await log_rankderank(guild, e)
+
+    await dm(member, "📉 Tu as été rétrogradé",
+        f"**Serveur :** {guild.name}\n**Ancien rang :** {old_name}\n**Nouveau rang :** {new_name}\n**Raison :** {reason}",
+        color=discord.Color.red())
+
+@bot.command(name="setrank")
+@commands.has_permissions(manage_roles=True)
+async def set_rank(ctx, member: discord.Member, rang_num: int, *, reason: str = "Aucune raison"):
+    """!setrank @membre [1-6] [raison] — Définit directement le rang (1=***, 6=I)"""
+    guild = ctx.guild
+    if rang_num < 1 or rang_num > 6:
+        return await ctx.send("❌ Le rang doit être entre **1** (***) et **6** (I).")
+
+    idx = rang_num - 1
+    new_grade_name, new_titre_name = RANGS[idx]
+    new_grade = discord.utils.get(guild.roles, name=new_grade_name)
+    new_titre = discord.utils.get(guild.roles, name=new_titre_name)
+
+    if not new_grade or not new_titre:
+        return await ctx.send(
+            f"❌ Rôles introuvables : **{new_grade_name}** et/ou **{new_titre_name}**.")
+
+    # Retirer tous les anciens rangs
+    all_rang_roles = []
+    for g, t in RANGS:
+        gr = discord.utils.get(guild.roles, name=g)
+        tr = discord.utils.get(guild.roles, name=t)
+        if gr: all_rang_roles.append(gr)
+        if tr: all_rang_roles.append(tr)
+    try:
+        to_remove = [r for r in all_rang_roles if r in member.roles]
+        if to_remove: await member.remove_roles(*to_remove)
+    except Exception: pass
+
+    # Donner le nouveau rang
+    try:
+        await member.add_roles(*[r for r in [new_grade, new_titre] if r])
+    except discord.Forbidden:
+        return await ctx.send("❌ Permission refusée.")
+
+    new_name = f"{new_grade_name} / {new_titre_name}"
+    e = discord.Embed(
+        title="🎖️ Rang Défini",
+        description=f"{member.mention} a reçu le rang **{new_name}** par {ctx.author.mention}",
+        color=discord.Color.blurple(),
+        timestamp=datetime.utcnow()
+    )
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.add_field(name="Rang attribué", value=f"**{new_name}**")
+    e.add_field(name="Raison", value=reason, inline=False)
+    e.set_footer(text=f"Par {ctx.author.display_name}")
+
+    await ctx.send(embed=e)
+    await log_rankderank(guild, e)
+    await dm(member, "🎖️ Rang attribué",
+        f"**Serveur :** {guild.name}\n**Rang :** {new_name}\n**Raison :** {reason}",
+        color=discord.Color.blurple())
+
+@bot.command(name="removerank")
+@commands.has_permissions(manage_roles=True)
+async def remove_rank(ctx, member: discord.Member, *, reason: str = "Aucune raison"):
+    """!removerank @membre — Retire tous les rangs du membre"""
+    guild = ctx.guild
+    rang  = get_rang_actuel(member)
+    if not rang:
+        return await ctx.send(f"❌ {member.mention} n'a aucun rang.")
+
+    old_name = f"{RANGS[rang[0]][0]} / {RANGS[rang[0]][1]}"
+    old_grade, old_titre = rang[1], rang[2]
+    try:
+        to_remove = [r for r in [old_grade, old_titre] if r and r in member.roles]
+        if to_remove: await member.remove_roles(*to_remove)
+    except discord.Forbidden:
+        return await ctx.send("❌ Permission refusée.")
+
+    e = discord.Embed(
+        title="❌ Rang Retiré",
+        description=f"{member.mention} a perdu son rang **{old_name}**",
+        color=discord.Color.dark_red(),
+        timestamp=datetime.utcnow()
+    )
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.add_field(name="Rang retiré", value=old_name)
+    e.add_field(name="Raison", value=reason, inline=False)
+    e.set_footer(text=f"Par {ctx.author.display_name}")
+
+    await ctx.send(embed=e)
+    await log_rankderank(guild, e)
+    await dm(member, "❌ Ton rang a été retiré",
+        f"**Serveur :** {guild.name}\n**Rang retiré :** {old_name}\n**Raison :** {reason}",
+        color=discord.Color.dark_red())
+
+@bot.command(name="ranglist")
+async def rang_list(ctx):
+    """!ranglist — Affiche la hiérarchie des rangs"""
+    e = discord.Embed(title="🎖️ Hiérarchie des Rangs", color=discord.Color.gold(),
+        timestamp=datetime.utcnow())
+    medals = ["👑", "⭐", "🌟", "💫", "✨", "🔰"]
+    parts = []
+    for i, (grade, titre) in enumerate(RANGS):
+        grade_role = discord.utils.get(ctx.guild.roles, name=grade)
+        titre_role = discord.utils.get(ctx.guild.roles, name=titre)
+        gm = grade_role.mention if grade_role else f"`{grade}`"
+        tm = titre_role.mention if titre_role else f"`{titre}`"
+        parts.append(f"{medals[i]} {gm} + {tm}")
+    e.description = "\n".join(parts)
+    e.set_footer(text="!rank pour monter | !derank pour descendre")
+    await ctx.send(embed=e)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🏆 SYSTÈME DE TROPHÉES
+# ══════════════════════════════════════════════════════════════════════════════
+
+trophees_db = load_json("trophees.json", {})
+
+# ─── CONFIG TROPHÉES ──────────────────────────────────────────────────────────
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def settrophees(ctx, *, arg: str):
+    """!settrophees #salon — Définit le salon des trophées"""
+    channel = await resolve_channel(ctx, arg)
+    if not channel: return await ctx.send("❌ Salon introuvable.")
+    set_cfg(ctx.guild.id, "trophees_channel", channel.id)
+    await ctx.send(f"✅ Salon trophées → {channel.mention}")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def addvote(ctx, member: discord.Member, amount: int = 1):
+    """!addvote @membre [nombre] — Ajoute des votes à un membre"""
+    gid = str(ctx.guild.id); uid = str(member.id)
+    trophees_db.setdefault(gid, {}).setdefault(uid, {"votes": 0, "voice_minutes": 0})
+    trophees_db[gid][uid]["votes"] = trophees_db[gid][uid].get("votes", 0) + amount
+    save_json("trophees.json", trophees_db)
+    await ctx.send(f"✅ +{amount} vote(s) pour {member.mention} (total : **{trophees_db[gid][uid]['votes']}**)")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def removevote(ctx, member: discord.Member, amount: int = 1):
+    """!removevote @membre [nombre] — Retire des votes à un membre"""
+    gid = str(ctx.guild.id); uid = str(member.id)
+    trophees_db.setdefault(gid, {}).setdefault(uid, {"votes": 0, "voice_minutes": 0})
+    trophees_db[gid][uid]["votes"] = max(0, trophees_db[gid][uid].get("votes", 0) - amount)
+    save_json("trophees.json", trophees_db)
+    await ctx.send(f"✅ -{amount} vote(s) pour {member.mention} (total : **{trophees_db[gid][uid]['votes']}**)")
+
+# ─── TRACKING VOCAL ───────────────────────────────────────────────────────────
+voice_join_times = {}  # {member_id: timestamp}
+XP_PER_VOICE_MIN = 1   # XP par minute en vocal
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    if member.bot: return
+    uid = str(member.id)
+    gid = str(member.guild.id)
+
+    # ── Anti-spam vocal ───────────────────────────────────────────────────────
+    if before.channel != after.channel:
+        now_v = time.time()
+        voice_spam_tracker[uid].append(now_v)
+        voice_spam_tracker[uid] = [t for t in voice_spam_tracker[uid] if now_v - t < 30]
+        if len(voice_spam_tracker[uid]) >= VOICE_SPAM_THRESHOLD:
+            try:
+                until = discord.utils.utcnow() + timedelta(minutes=10)
+                await member.timeout(until, reason="🔒 Anti-spam vocal")
+            except Exception: pass
+            e = discord.Embed(
+                title="🔇 Anti-Spam Vocal",
+                description=f"{member.mention} mute 10min pour spam vocal ({len(voice_spam_tracker[uid])}x en 30s)",
+                color=discord.Color.orange(), timestamp=datetime.utcnow()
+            )
+            await log_security(member.guild, e)
+            voice_spam_tracker[uid] = []
+
+    # Rejoint un salon vocal
+    if before.channel is None and after.channel is not None:
+        voice_join_times[uid] = time.time()
+        await refresh_vocal_counter(member.guild)
+        # Log vocal
+        e = discord.Embed(
+            title="🎙️ Rejoint le vocal",
+            description=f"{member.mention} a rejoint **{after.channel.name}**",
+            color=discord.Color.green(), timestamp=datetime.utcnow()
+        )
+        e.set_thumbnail(url=member.display_avatar.url)
+        await log_vocal(member.guild, e)
+
+    # Quitte un salon vocal
+    elif before.channel is not None and after.channel is None:
+        if uid in voice_join_times:
+            elapsed_seconds = time.time() - voice_join_times.pop(uid)
+            elapsed_minutes = int(elapsed_seconds / 60)
+
+            if elapsed_minutes > 0:
+                # Trophées — temps vocal
+                trophees_db.setdefault(gid, {}).setdefault(uid, {"votes": 0, "voice_minutes": 0})
+                trophees_db[gid][uid]["voice_minutes"] = trophees_db[gid][uid].get("voice_minutes", 0) + elapsed_minutes
+                save_json("trophees.json", trophees_db)
+
+                # XP vocal fusionné avec XP texte (1 XP/min)
+                xp_gained = elapsed_minutes * XP_PER_VOICE_MIN
+                xp_db.setdefault(gid, {})
+                old_xp    = xp_db[gid].get(uid, 0)
+                old_level = get_level(old_xp)
+                xp_db[gid][uid] = old_xp + xp_gained
+                new_level = get_level(xp_db[gid][uid])
+                save_json("xp.json", xp_db)
+
+                # Level up ?
+                if new_level > old_level:
+                    guild = member.guild
+                    e = discord.Embed(
+                        title="🎉 Level Up! (Vocal)",
+                        description=f"{member.mention} passe au **niveau {new_level}** grâce au vocal ! 🎙️",
+                        color=discord.Color.gold(),
+                        timestamp=datetime.utcnow()
+                    )
+                    e.set_thumbnail(url=member.display_avatar.url)
+                    e.add_field(name="🎙️ Temps vocal", value=f"{elapsed_minutes} min")
+                    e.add_field(name="✨ XP gagné",    value=f"+{xp_gained} XP")
+
+                    level_ch = discord.utils.find(
+                        lambda c: "niveaux" in c.name.lower() or "niveau" in c.name.lower(),
+                        guild.text_channels)
+                    if level_ch:
+                        await level_ch.send(embed=e)
+
+                    # Rôles de niveau
+                    for req, rname in sorted(LEVEL_ROLES.items()):
+                        if new_level >= req:
+                            role = discord.utils.get(guild.roles, name=rname)
+                            if role and role not in member.roles:
+                                try: await member.add_roles(role)
+                                except Exception: pass
+
+        await refresh_vocal_counter(member.guild)
+        # Log vocal départ
+        e_voc = discord.Embed(
+            title="🔇 Quitté le vocal",
+            description=f"{member.mention} a quitté **{before.channel.name}**",
+            color=discord.Color.red(), timestamp=datetime.utcnow()
+        )
+        e_voc.set_thumbnail(url=member.display_avatar.url)
+        if uid in voice_join_times or True:
+            elapsed_total = int((time.time() - voice_join_times.get(uid, time.time())) / 60) if uid not in voice_join_times else 0
+        await log_vocal(member.guild, e_voc)
+
+    # Changement de salon vocal
+    elif before.channel is not None and after.channel is not None and before.channel != after.channel:
+        e_voc = discord.Embed(
+            title="🔀 Changement de vocal",
+            description=f"{member.mention} : **{before.channel.name}** → **{after.channel.name}**",
+            color=discord.Color.blurple(), timestamp=datetime.utcnow()
+        )
+        e_voc.set_thumbnail(url=member.display_avatar.url)
+        await log_vocal(member.guild, e_voc)
+
+        # ── Mode Dog : déplacer les followers ────────────────────────────────
+        master_id = str(member.id)
+        for follower_id, target_id in list(dog_followers.items()):
+            if target_id == master_id:
+                # Ce membre doit suivre
+                follower = member.guild.get_member(int(follower_id))
+                if follower and follower.voice and follower.voice.channel:
+                    if follower.voice.channel != after.channel:
+                        try:
+                            await asyncio.sleep(0.5)
+                            await follower.move_to(after.channel, reason="🐕 Mode Dog — suit son maître")
+                        except Exception: pass
+
+def get_trophee_badges(votes, voice_minutes, booster):
+    """Retourne les badges trophées selon les stats"""
+    badges = []
+
+    # Badges votes
+    if votes >= 500: badges.append("🏆 Légende des Votes")
+    elif votes >= 200: badges.append("🥇 Expert Voteur")
+    elif votes >= 100: badges.append("🥈 Voteur Assidu")
+    elif votes >= 50:  badges.append("🥉 Bon Voteur")
+    elif votes >= 10:  badges.append("📊 Débutant Voteur")
+
+    # Badges vocal
+    h = voice_minutes // 60
+    if h >= 500:  badges.append("🎙️ Légende Vocal")
+    elif h >= 200: badges.append("🔊 Maître du Vocal")
+    elif h >= 100: badges.append("📢 Habitué du Vocal")
+    elif h >= 50:  badges.append("🎤 Actif Vocal")
+    elif h >= 10:  badges.append("🔈 Nouveau Vocal")
+
+    # Badge boost
+    if booster: badges.append("💎 Booster du Serveur")
+
+    return badges if badges else ["🌱 Débutant"]
+
+@bot.command()
+async def trophe(ctx, member: discord.Member = None):
+    """!trophe [@membre] — Affiche le trophée d'un membre dans le salon trophées"""
+    member = member or ctx.author
+    guild  = ctx.guild
+    gid    = str(guild.id)
+    uid    = str(member.id)
+
+    # Vérifier le salon trophées
+    ch_id = get_cfg(guild.id, "trophees_channel")
+
+    # Récupérer les données
+    data         = trophees_db.get(gid, {}).get(uid, {})
+    votes        = data.get("votes", 0)
+    voice_min    = data.get("voice_minutes", 0)
+    voice_hours  = voice_min // 60
+    voice_rest   = voice_min % 60
+
+    # Stats serveur en temps réel
+    boosts       = guild.premium_subscription_count or 0
+    booster      = member.premium_since is not None
+    in_voice     = sum(1 for vc in guild.voice_channels for m in vc.members if not m.bot)
+
+    # Badges
+    badges = get_trophee_badges(votes, voice_min, booster)
+
+    # Construire l'embed
+    e = discord.Embed(
+        title=f"🏆 Trophée de {member.display_name}",
+        color=discord.Color.gold(),
+        timestamp=datetime.utcnow()
+    )
+
+    # Avatar du membre + icône du serveur
+    e.set_thumbnail(url=member.display_avatar.url)
+    if guild.icon:
+        e.set_author(name=guild.name, icon_url=guild.icon.url)
+
+    # Stats personnelles
+    e.add_field(
+        name="📊 Statistiques Personnelles",
+        value=(
+            f"🗳️ **Votes :** {votes}\n"
+            f"🎙️ **Temps en vocal :** {voice_hours}h {voice_rest}min\n"
+            f"💎 **Booster :** {'Oui ✅' if booster else 'Non ❌'}"
+        ),
+        inline=True
+    )
+
+    # Stats du serveur (avec icône du serveur)
+    e.add_field(
+        name="🌐 Stats du Serveur",
+        value=(
+            f"💎 **Boosts :** {boosts}\n"
+            f"🎙️ **En vocal maintenant :** {in_voice}\n"
+            f"👥 **Membres :** {guild.member_count}"
+        ),
+        inline=True
+    )
+
+    # Badges
+    e.add_field(
+        name="🎖️ Badges Obtenus",
+        value="\n".join(badges),
+        inline=False
+    )
+
+    # Barre de progression votes
+    next_vote_milestone = next((n for n in [10, 50, 100, 200, 500] if n > votes), None)
+    if next_vote_milestone:
+        prev = max((n for n in [0, 10, 50, 100, 200] if n <= votes), default=0)
+        progress = votes - prev
+        total    = next_vote_milestone - prev
+        filled   = int((progress / total) * 10)
+        bar      = "█" * filled + "░" * (10 - filled)
+        e.add_field(
+            name=f"🗳️ Progression Votes → {next_vote_milestone}",
+            value=f"`[{bar}]` {votes}/{next_vote_milestone}",
+            inline=False
+        )
+
+    # Barre de progression vocal
+    next_voice_milestone = next((n for n in [10, 50, 100, 200, 500] if n > voice_hours), None)
+    if next_voice_milestone:
+        prev_h = max((n for n in [0, 10, 50, 100, 200] if n <= voice_hours), default=0)
+        progress_h = voice_hours - prev_h
+        total_h    = next_voice_milestone - prev_h
+        filled_h   = int((progress_h / total_h) * 10) if total_h > 0 else 0
+        bar_h      = "█" * filled_h + "░" * (10 - filled_h)
+        e.add_field(
+            name=f"🎙️ Progression Vocal → {next_voice_milestone}h",
+            value=f"`[{bar_h}]` {voice_hours}/{next_voice_milestone}h",
+            inline=False
+        )
+
+    e.set_footer(text=f"Trophée de {member.display_name} • {guild.name}")
+
+    # Envoyer dans le salon trophées si configuré, sinon dans le salon actuel
+    if ch_id:
+        trophee_ch = guild.get_channel(int(ch_id))
+        if trophee_ch and trophee_ch != ctx.channel:
+            await trophee_ch.send(embed=e)
+            await ctx.send(f"✅ Trophée envoyé dans {trophee_ch.mention} !", delete_after=5)
+            return
+
+    await ctx.send(embed=e)
+
+@bot.command()
+async def topvotes(ctx):
+    """!topvotes — Classement des membres par votes"""
+    gid = str(ctx.guild.id)
+    data = trophees_db.get(gid, {})
+    top = sorted(data.items(), key=lambda x: x[1].get("votes", 0), reverse=True)[:10]
+
+    e = discord.Embed(title="🗳️ Top Votes du Serveur", color=discord.Color.gold(),
+        timestamp=datetime.utcnow())
+    if ctx.guild.icon: e.set_thumbnail(url=ctx.guild.icon.url)
+
+    medals = ["🥇", "🥈", "🥉"] + ["🏅"] * 7
+    if not top:
+        e.description = "Aucun vote enregistré pour l'instant."
+    else:
+        for i, (uid, d) in enumerate(top):
+            m = ctx.guild.get_member(int(uid))
+            votes = d.get("votes", 0)
+            e.add_field(
+                name=f"{medals[i]} {m.display_name if m else uid}",
+                value=f"🗳️ **{votes}** vote(s)",
+                inline=False
+            )
+    await ctx.send(embed=e)
+
+@bot.command()
+async def topvocal(ctx):
+    """!topvocal — Classement des membres par temps vocal"""
+    gid = str(ctx.guild.id)
+    data = trophees_db.get(gid, {})
+    top = sorted(data.items(), key=lambda x: x[1].get("voice_minutes", 0), reverse=True)[:10]
+
+    e = discord.Embed(title="🎙️ Top Vocal du Serveur", color=discord.Color.blurple(),
+        timestamp=datetime.utcnow())
+    if ctx.guild.icon: e.set_thumbnail(url=ctx.guild.icon.url)
+
+    medals = ["🥇", "🥈", "🥉"] + ["🏅"] * 7
+    if not top:
+        e.description = "Aucune donnée vocale enregistrée pour l'instant."
+    else:
+        for i, (uid, d) in enumerate(top):
+            m = ctx.guild.get_member(int(uid))
+            vm = d.get("voice_minutes", 0)
+            h = vm // 60; mn = vm % 60
+            e.add_field(
+                name=f"{medals[i]} {m.display_name if m else uid}",
+                value=f"🎙️ **{h}h {mn}min**",
+                inline=False
+            )
+    await ctx.send(embed=e)
+
+# ══════════════════════════════════════════════════════════════════════════════
+@bot.event
+async def on_raw_reaction_add(payload):
+    if payload.user_id == bot.user.id:
+        return
+    mid = str(payload.message_id)
+    if mid in reaction_roles:
+        guild  = bot.get_guild(payload.guild_id)
+        member = guild.get_member(payload.user_id)
+        role   = guild.get_role(reaction_roles[mid]["role_id"])
+        if role and member:
+            try: await member.add_roles(role)
+            except Exception: pass
+
+@bot.event
+async def on_raw_reaction_remove(payload):
+    mid = str(payload.message_id)
+    if mid in reaction_roles:
+        guild  = bot.get_guild(payload.guild_id)
+        member = guild.get_member(payload.user_id)
+        role   = guild.get_role(reaction_roles[mid]["role_id"])
+        if role and member:
+            try: await member.remove_roles(role)
+            except Exception: pass
+
+            try: await member.remove_roles(role)
+            except Exception: pass
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🔒 SÉCURITÉ AVANCÉE — ANTI-NUKE & LOCKDOWN
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Events Anti-Nuke ──────────────────────────────────────────────────────────
+@bot.event
+async def on_guild_channel_delete(channel):
+    """Détecte la suppression massive de salons"""
+    guild = channel.guild
+    async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.channel_delete):
+        if entry.user and not entry.user.bot:
+            await nuke_action(guild, entry.user, f"Suppression salon : #{channel.name}")
+
+@bot.event
+async def on_guild_channel_create(channel):
+    """Détecte la création massive de salons"""
+    guild = channel.guild
+    async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.channel_create):
+        if entry.user and not entry.user.bot:
+            await nuke_action(guild, entry.user, f"Création salon : #{channel.name}")
+
+@bot.event
+async def on_guild_role_delete(role):
+    """Détecte la suppression massive de rôles"""
+    guild = role.guild
+    async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.role_delete):
+        if entry.user and not entry.user.bot:
+            await nuke_action(guild, entry.user, f"Suppression rôle : @{role.name}")
+
+@bot.event
+async def on_member_ban(guild, user):
+    """Détecte les bans massifs"""
+    async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.ban):
+        if entry.user and not entry.user.bot and entry.user != guild.owner:
+            await nuke_action(guild, entry.user, f"Ban de {user}")
+
+@bot.event
+async def on_webhooks_update(channel):
+    """Détecte la création de webhooks suspects"""
+    guild = channel.guild
+    async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.webhook_create):
+        if entry.user and not entry.user.bot:
+            e = discord.Embed(
+                title="⚠️ Webhook Créé",
+                description=f"Nouveau webhook dans {channel.mention} par {entry.user.mention}",
+                color=discord.Color.orange(), timestamp=datetime.utcnow()
+            )
+            await log_security(guild, e)
+
+# ── Commandes Lockdown ────────────────────────────────────────────────────────
+@bot.command(name="lockdown")
+@commands.has_permissions(administrator=True)
+async def lockdown(ctx, *, raison: str = "Mesure de sécurité d'urgence"):
+    """!lockdown [raison] — Verrouille tous les salons texte immédiatement"""
+    guild = ctx.guild
+    gid   = str(guild.id)
+
+    if lockdown_active.get(gid):
+        return await ctx.send("⚠️ Le serveur est déjà en lockdown. Utilise `!unlockdown` pour lever.")
+
+    lockdown_active[gid] = True
+    msg = await ctx.send("🔒 Lockdown en cours...")
+    locked = 0
+
+    for channel in guild.text_channels:
+        try:
+            # Sauvegarder les permissions actuelles de @everyone
+            overwrite = channel.overwrites_for(guild.default_role)
+            lockdown_backup[channel.id] = overwrite.pair()
+            # Bloquer l'envoi de messages
+            overwrite.send_messages = False
+            await channel.set_permissions(guild.default_role, overwrite=overwrite,
+                reason=f"🔒 Lockdown : {raison}")
+            locked += 1
+        except Exception: pass
+
+    e = discord.Embed(
+        title="🔒 SERVEUR EN LOCKDOWN",
+        description=f"**{locked}** salon(s) verrouillé(s)\n**Raison :** {raison}",
+        color=discord.Color.dark_red(),
+        timestamp=datetime.utcnow()
+    )
+    e.add_field(name="🛡️ Déclenché par", value=ctx.author.mention)
+    e.add_field(name="🔓 Pour lever", value="`!unlockdown`")
+    e.set_footer(text="Kozakura Security")
+
+    await msg.edit(content="", embed=e)
+    await log_security(guild, e)
+
+    # Annoncer dans le salon actuel
+    staff_role = discord.utils.get(guild.roles, name="⛩️ ⋮ Gestion Staff")
+    if staff_role:
+        await ctx.send(f"🚨 {staff_role.mention} — Serveur en lockdown !")
+
+@bot.command(name="unlockdown")
+@commands.has_permissions(administrator=True)
+async def unlockdown(ctx):
+    """!unlockdown — Lève le lockdown et restaure les permissions"""
+    guild = ctx.guild
+    gid   = str(guild.id)
+
+    if not lockdown_active.get(gid):
+        return await ctx.send("❌ Le serveur n'est pas en lockdown.")
+
+    lockdown_active[gid] = False
+    msg = await ctx.send("🔓 Levée du lockdown en cours...")
+    unlocked = 0
+
+    for channel in guild.text_channels:
+        try:
+            overwrite = channel.overwrites_for(guild.default_role)
+            # Restaurer les permissions sauvegardées ou remettre à None
+            if channel.id in lockdown_backup:
+                allow, deny = lockdown_backup[channel.id]
+                overwrite = discord.PermissionOverwrite.from_pair(allow, deny)
+                del lockdown_backup[channel.id]
+            else:
+                overwrite.send_messages = None
+            await channel.set_permissions(guild.default_role, overwrite=overwrite,
+                reason="🔓 Lockdown levé")
+            unlocked += 1
+        except Exception: pass
+
+    e = discord.Embed(
+        title="🔓 LOCKDOWN LEVÉ",
+        description=f"**{unlocked}** salon(s) déverrouillé(s)",
+        color=discord.Color.green(),
+        timestamp=datetime.utcnow()
+    )
+    e.add_field(name="🛡️ Levé par", value=ctx.author.mention)
+    e.set_footer(text="Kozakura Security")
+
+    await msg.edit(content="", embed=e)
+    await log_security(guild, e)
+
+@bot.command(name="securitystatus")
+@commands.has_permissions(kick_members=True)
+async def security_status(ctx):
+    """!securitystatus — Affiche le statut de sécurité du serveur"""
+    guild = ctx.guild
+    gid   = str(guild.id)
+
+    # Compter les membres suspects
+    suspects = []
+    for m in guild.members:
+        if m.bot: continue
+        age = (datetime.utcnow() - m.created_at.replace(tzinfo=None)).days
+        if age < ACCOUNT_MIN_AGE_DAYS or not m.avatar:
+            suspects.append(m)
+
+    # Membres mutés
+    muted = [m for m in guild.members if m.is_timed_out()]
+
+    e = discord.Embed(
+        title="🔒 Statut de Sécurité — Kozakura",
+        color=discord.Color.green() if not lockdown_active.get(gid) else discord.Color.red(),
+        timestamp=datetime.utcnow()
+    )
+    e.add_field(name="🔒 Lockdown", value="🟢 Inactif" if not lockdown_active.get(gid) else "🔴 ACTIF", inline=True)
+    e.add_field(name="🛡️ Anti-bot", value="✅ Actif" if get_cfg(guild.id, "antibot_active") else "❌ Inactif", inline=True)
+    e.add_field(name="👥 Membres totaux", value=str(guild.member_count), inline=True)
+    e.add_field(name="🔍 Comptes suspects", value=f"**{len(suspects)}** membre(s)\n(<{ACCOUNT_MIN_AGE_DAYS}j ou sans avatar)", inline=True)
+    e.add_field(name="🔇 Membres mutés", value=str(len(muted)), inline=True)
+    e.add_field(name="💎 Boosts", value=str(guild.premium_subscription_count), inline=True)
+
+    if suspects[:5]:
+        e.add_field(name="⚠️ Top suspects",
+            value="\n".join(f"• {m.mention} — {(datetime.utcnow()-m.created_at.replace(tzinfo=None)).days}j" for m in suspects[:5]),
+            inline=False)
+
+    e.set_footer(text="Kozakura Security System")
+    await ctx.send(embed=e)
+
+@bot.command(name="setsecuritylog")
+@commands.has_permissions(administrator=True)
+async def set_security_log(ctx, *, arg: str):
+    """!setsecuritylog #salon — Définit le salon de logs sécurité"""
+    channel = await resolve_channel(ctx, arg)
+    if not channel: return await ctx.send("❌ Salon introuvable.")
+    set_cfg(ctx.guild.id, "security_log", channel.id)
+    await ctx.send(f"✅ Logs sécurité → {channel.mention}")
+
+@bot.command(name="setminage")
+@commands.has_permissions(administrator=True)
+async def set_min_age(ctx, jours: int):
+    """!setminage [jours] — Définit l'âge minimum d'un compte pour rejoindre"""
+    global ACCOUNT_MIN_AGE_DAYS
+    ACCOUNT_MIN_AGE_DAYS = max(0, jours)
+    await ctx.send(f"✅ Âge minimum des comptes : **{ACCOUNT_MIN_AGE_DAYS} jours**")
+
+# ── Freeze / Unfreeze ─────────────────────────────────────────────────────────
+frozen_members = {}  # {member_id: {channel_id: overwrite_pair}}
+
+@bot.command(name="freeze")
+@commands.has_permissions(administrator=True)
+async def freeze(ctx, member: discord.Member, *, raison: str = "Gel préventif"):
+    """!freeze @membre [raison] — Coupe toutes les permissions sans bannir"""
+    if member.id in frozen_members:
+        return await ctx.send(f"❌ {member.mention} est déjà gelé.")
+
+    frozen_members[member.id] = {}
+    count = 0
+    for channel in ctx.guild.channels:
+        try:
+            ow = channel.overwrites_for(member)
+            frozen_members[member.id][channel.id] = ow.pair()
+            await channel.set_permissions(member,
+                send_messages=False, read_messages=False,
+                connect=False, speak=False,
+                reason=f"🧊 Freeze : {raison}")
+            count += 1
+        except Exception: pass
+
+    # Déconnecter du vocal si présent
+    if member.voice:
+        try: await member.move_to(None)
+        except Exception: pass
+
+    e = discord.Embed(
+        title="🧊 Membre Gelé",
+        description=f"{member.mention} a été **gelé** — accès coupé partout.",
+        color=discord.Color.blue(), timestamp=datetime.utcnow()
+    )
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.add_field(name="📋 Raison", value=raison)
+    e.add_field(name="🛡️ Par", value=ctx.author.mention)
+    e.add_field(name="🔓 Pour libérer", value=f"`!unfreeze @{member.name}`")
+    e.set_footer(text="Kozakura Security")
+    await ctx.send(embed=e)
+    await log_security(ctx.guild, e)
+    await dm(member, "🧊 Tu as été gelé",
+        f"**Serveur :** {ctx.guild.name}\n**Raison :** {raison}\nContacte le staff pour plus d'infos.")
+
+@bot.command(name="unfreeze")
+@commands.has_permissions(administrator=True)
+async def unfreeze(ctx, member: discord.Member):
+    """!unfreeze @membre — Restaure les permissions d'un membre gelé"""
+    if member.id not in frozen_members:
+        return await ctx.send(f"❌ {member.mention} n'est pas gelé.")
+
+    backups = frozen_members.pop(member.id)
+    count = 0
+    for channel in ctx.guild.channels:
+        try:
+            if channel.id in backups:
+                allow, deny = backups[channel.id]
+                ow = discord.PermissionOverwrite.from_pair(allow, deny)
+                if allow.value == 0 and deny.value == 0:
+                    await channel.set_permissions(member, overwrite=None)
+                else:
+                    await channel.set_permissions(member, overwrite=ow)
+            else:
+                await channel.set_permissions(member, overwrite=None)
+            count += 1
+        except Exception: pass
+
+    e = discord.Embed(
+        title="🔥 Membre Libéré",
+        description=f"{member.mention} a été **dégelé** — permissions restaurées.",
+        color=discord.Color.green(), timestamp=datetime.utcnow()
+    )
+    e.add_field(name="🛡️ Par", value=ctx.author.mention)
+    await ctx.send(embed=e)
+    await log_security(ctx.guild, e)
+    await dm(member, "🔥 Tu as été libéré",
+        f"**Serveur :** {ctx.guild.name}\nTon accès a été restauré.", color=discord.Color.green())
+
+# ── Honeypot ──────────────────────────────────────────────────────────────────
+honeypot_channels = set()  # {channel_id}
+
+@bot.command(name="sethoneypot")
+@commands.has_permissions(administrator=True)
+async def set_honeypot(ctx, *, arg: str = None):
+    """!sethoneypot [#salon] — Crée ou définit un salon piège invisible"""
+    if arg:
+        channel = await resolve_channel(ctx, arg)
+    else:
+        # Créer un nouveau salon piège
+        try:
+            channel = await ctx.guild.create_text_channel(
+                "〔🍯〕honeypot",
+                reason="Salon piège honeypot",
+                overwrites={
+                    ctx.guild.default_role: discord.PermissionOverwrite(
+                        read_messages=True, send_messages=True
+                    ),
+                    ctx.guild.me: discord.PermissionOverwrite(
+                        read_messages=True, send_messages=True, manage_channels=True
+                    )
+                }
+            )
+            await ctx.send(f"✅ Salon honeypot créé : {channel.mention}\n⚠️ Rends-le **invisible** pour les humains (retire la permission `Voir le salon` pour @everyone et staff) mais laisse-le visible pour les bots/raiders.")
+        except Exception as ex:
+            return await ctx.send(f"❌ Erreur : {ex}")
+
+    honeypot_channels.add(channel.id)
+    await ctx.send(f"✅ Salon honeypot → {channel.mention}\nTout message dans ce salon déclenchera une alerte ! 🍯")
+
+@bot.listen("on_message")
+async def honeypot_listener(message):
+    """Alerte si quelqu'un écrit dans le salon honeypot"""
+    if message.author.bot or not message.guild: return
+    if message.channel.id not in honeypot_channels: return
+
+    member = message.author
+    guild  = message.guild
+
+    e = discord.Embed(
+        title="🍯 HONEYPOT DÉCLENCHÉ !",
+        description=f"**{member.mention}** a écrit dans le salon piège !",
+        color=discord.Color.red(), timestamp=datetime.utcnow()
+    )
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.add_field(name="Message", value=f"||{message.content[:300]}||")
+    e.add_field(name="Membre", value=f"{member} (`{member.id}`)")
+    e.add_field(name="Compte créé", value=member.created_at.strftime('%d/%m/%Y'))
+
+    staff_role = discord.utils.get(guild.roles, name="⛩️ ⋮ Gestion Staff")
+    mention    = staff_role.mention if staff_role else ""
+    await log_security(guild, e)
+
+    sec_ch = discord.utils.find(lambda c: any(n in c.name.lower() for n in SECURITY_LOG_NAMES), guild.text_channels)
+    if sec_ch:
+        await sec_ch.send(f"🚨 {mention} **HONEYPOT DÉCLENCHÉ** — {member.mention}", embed=e)
+
+    # Auto-ban si compte < 7 jours
+    age = (datetime.utcnow() - member.created_at.replace(tzinfo=None)).days
+    if age < 7:
+        try:
+            await member.ban(reason="🍯 Honeypot — compte suspect")
+            await sec_ch.send(f"✅ {member} banni automatiquement (compte {age}j)")
+        except Exception: pass
+
+# ── Whois ─────────────────────────────────────────────────────────────────────
+@bot.command(name="whois")
+@commands.has_permissions(kick_members=True)
+async def whois(ctx, member: discord.Member):
+    """!whois @membre — Enquête complète sur un membre"""
+    gid = str(ctx.guild.id)
+    uid = str(member.id)
+
+    # Données collectées
+    sanctions  = sanctions_db.get(gid, {}).get(uid, [])
+    warnings   = warnings_db.get(gid, {}).get(uid, [])
+    xp         = xp_db.get(gid, {}).get(uid, 0)
+    trophees   = trophees_db.get(gid, {}).get(uid, {})
+    msgs       = message_count_db.get(gid, {}).get(uid, 0)
+
+    account_age = (datetime.utcnow() - member.created_at.replace(tzinfo=None)).days
+    server_age  = (datetime.utcnow() - member.joined_at.replace(tzinfo=None)).days if member.joined_at else 0
+
+    # Flags de risque
+    risk_flags = []
+    if account_age < 7:     risk_flags.append("🚨 Compte < 7 jours")
+    if account_age < 30:    risk_flags.append("⚠️ Compte < 30 jours")
+    if not member.avatar:   risk_flags.append("⚠️ Pas d'avatar")
+    if len(sanctions) >= 5: risk_flags.append("🔴 5+ sanctions")
+    if len(warnings) >= 3:  risk_flags.append("🟠 3+ avertissements")
+    if member.id in frozen_members: risk_flags.append("🧊 Actuellement gelé")
+    if member.is_timed_out(): risk_flags.append("🔇 Actuellement muté")
+
+    risk_level = "🟢 Faible" if not risk_flags else ("🟠 Moyen" if len(risk_flags) < 3 else "🔴 Élevé")
+
+    e = discord.Embed(
+        title=f"🔍 Whois — {member.display_name}",
+        color=discord.Color.green() if not risk_flags else (discord.Color.orange() if len(risk_flags) < 3 else discord.Color.red()),
+        timestamp=datetime.utcnow()
+    )
+    e.set_thumbnail(url=member.display_avatar.url)
+
+    e.add_field(name="👤 Identité",
+        value=f"**Pseudo :** {member.name}\n**Surnom :** {member.nick or 'Aucun'}\n**ID :** `{member.id}`",
+        inline=False)
+    e.add_field(name="📅 Dates",
+        value=f"**Compte créé :** {member.created_at.strftime('%d/%m/%Y')} ({account_age}j)\n**A rejoint :** {member.joined_at.strftime('%d/%m/%Y') if member.joined_at else '?'} ({server_age}j)",
+        inline=False)
+    e.add_field(name="📊 Activité",
+        value=f"**Messages :** ~{msgs}\n**XP :** {xp} (Niv.{get_level(xp)})\n**Vocal :** {trophees.get('voice_minutes',0)//60}h",
+        inline=True)
+    e.add_field(name="⚖️ Historique",
+        value=f"**Sanctions :** {len(sanctions)}\n**Warns :** {len(warnings)}\n**Votes :** {trophees.get('votes',0)}",
+        inline=True)
+    e.add_field(name=f"🎯 Niveau de risque : {risk_level}",
+        value="\n".join(risk_flags) if risk_flags else "✅ Aucun indicateur suspect",
+        inline=False)
+
+    # Rôles
+    roles = [r.mention for r in member.roles if r.name != "@everyone"]
+    if roles:
+        e.add_field(name=f"🎭 Rôles ({len(roles)})", value=" ".join(roles[-8:]), inline=False)
+
+    e.set_footer(text=f"Kozakura Security • {ctx.guild.name}")
+    await ctx.send(embed=e)
+
+# ── Backup & Restauration ─────────────────────────────────────────────────────
+server_backup = {}  # {guild_id: backup_data}
+
+@bot.command(name="backup")
+@commands.has_permissions(administrator=True)
+async def backup_server(ctx):
+    """!backup — Sauvegarde la structure du serveur (salons, rôles, catégories)"""
+    guild = ctx.guild
+    msg   = await ctx.send("⏳ Backup en cours...")
+
+    backup_data = {
+        "name":       guild.name,
+        "date":       str(datetime.utcnow()),
+        "roles":      [],
+        "categories": [],
+        "channels":   []
+    }
+
+    # Sauvegarder les rôles
+    for role in guild.roles:
+        if role.name == "@everyone": continue
+        backup_data["roles"].append({
+            "name":        role.name,
+            "color":       str(role.color),
+            "permissions": role.permissions.value,
+            "mentionable": role.mentionable,
+            "hoist":       role.hoist,
+            "position":    role.position
+        })
+
+    # Sauvegarder les catégories
+    for cat in guild.categories:
+        backup_data["categories"].append({
+            "id":   cat.id,
+            "name": cat.name,
+            "position": cat.position
+        })
+
+    # Sauvegarder les salons
+    for channel in guild.channels:
+        if isinstance(channel, (discord.TextChannel, discord.VoiceChannel)):
+            ch_data = {
+                "name":     channel.name,
+                "type":     "text" if isinstance(channel, discord.TextChannel) else "voice",
+                "category": channel.category.name if channel.category else None,
+                "position": channel.position,
+                "topic":    getattr(channel, "topic", None)
+            }
+            backup_data["channels"].append(ch_data)
+
+    server_backup[str(guild.id)] = backup_data
+    save_json("backup.json", server_backup)
+
+    e = discord.Embed(
+        title="✅ Backup Effectué",
+        description=f"Sauvegarde de **{guild.name}** réussie !",
+        color=discord.Color.green(), timestamp=datetime.utcnow()
+    )
+    e.add_field(name="🎭 Rôles", value=str(len(backup_data["roles"])))
+    e.add_field(name="📁 Catégories", value=str(len(backup_data["categories"])))
+    e.add_field(name="💬 Salons", value=str(len(backup_data["channels"])))
+    e.add_field(name="📅 Date", value=backup_data["date"][:16])
+    e.set_footer(text="Utilise !restorebackup pour restaurer")
+    await msg.edit(content="", embed=e)
+    await log_security(guild, e)
+
+@bot.command(name="restorebackup")
+@commands.has_permissions(administrator=True)
+async def restore_backup(ctx):
+    """!restorebackup — Restaure les rôles et catégories depuis le dernier backup"""
+    gid    = str(ctx.guild.id)
+    backup = server_backup.get(gid)
+    if not backup:
+        # Essayer de charger depuis le fichier
+        loaded = load_json("backup.json", {})
+        backup = loaded.get(gid)
+    if not backup:
+        return await ctx.send("❌ Aucun backup trouvé. Fais `!backup` d'abord.")
+
+    msg = await ctx.send("⏳ Restauration en cours... (seulement les rôles manquants)")
+    restored_roles = 0
+
+    for role_data in backup["roles"]:
+        existing = discord.utils.get(ctx.guild.roles, name=role_data["name"])
+        if not existing:
+            try:
+                color_val = role_data.get("color", "#000000")
+                color = discord.Color(int(color_val.replace("#",""), 16)) if color_val != "#000000" else discord.Color.default()
+                await ctx.guild.create_role(
+                    name=role_data["name"],
+                    color=color,
+                    permissions=discord.Permissions(role_data["permissions"]),
+                    mentionable=role_data.get("mentionable", False),
+                    hoist=role_data.get("hoist", False),
+                    reason="♻️ Restauration backup"
+                )
+                restored_roles += 1
+            except Exception: pass
+
+    e = discord.Embed(
+        title="♻️ Restauration Terminée",
+        color=discord.Color.green(), timestamp=datetime.utcnow()
+    )
+    e.add_field(name="🎭 Rôles recréés", value=str(restored_roles))
+    e.add_field(name="📅 Backup du", value=backup["date"][:16])
+    e.set_footer(text="Les salons ne sont pas recréés automatiquement pour éviter les doublons")
+    await msg.edit(content="", embed=e)
+
+# ── Quarantaine automatique ───────────────────────────────────────────────────
+@bot.command(name="quarantine")
+@commands.has_permissions(administrator=True)
+async def quarantine_cmd(ctx, member: discord.Member, *, raison: str = "Compte suspect"):
+    """!quarantine @membre — Met un membre en quarantaine (accès limité)"""
+    qr_role_id = get_cfg(ctx.guild.id, "quarantine_role")
+    if not qr_role_id:
+        return await ctx.send("❌ Aucun rôle quarantaine configuré. Utilise `!setquarantinerole @role`")
+
+    qr_role = ctx.guild.get_role(int(qr_role_id))
+    if not qr_role:
+        return await ctx.send("❌ Rôle quarantaine introuvable.")
+
+    try:
+        # Retirer tous les rôles sauf @everyone
+        roles_to_remove = [r for r in member.roles if r != ctx.guild.default_role and r != qr_role]
+        if roles_to_remove:
+            await member.remove_roles(*roles_to_remove, reason=f"🔒 Quarantaine : {raison}")
+        await member.add_roles(qr_role, reason=f"🔒 Quarantaine : {raison}")
+    except discord.Forbidden:
+        return await ctx.send("❌ Permission insuffisante.")
+
+    e = discord.Embed(
+        title="🔒 Membre en Quarantaine",
+        description=f"{member.mention} a été mis en quarantaine.",
+        color=discord.Color.orange(), timestamp=datetime.utcnow()
+    )
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.add_field(name="📋 Raison", value=raison)
+    e.add_field(name="🛡️ Par", value=ctx.author.mention)
+    e.set_footer(text="Kozakura Security")
+    await ctx.send(embed=e)
+    await log_security(ctx.guild, e)
+    await dm(member, "🔒 Tu as été mis en quarantaine",
+        f"**Serveur :** {ctx.guild.name}\n**Raison :** {raison}\nContacte le staff pour plus d'infos.",
+        color=discord.Color.orange())
+
+# ── Détection usurpation d'identité staff ─────────────────────────────────────
+STAFF_ROLES_DETECT = ["ykoza", "Univer", "Kozakura C.O.D", "Co-Fondateur", "Développer",
+                      "⛩️ ⋮ Gestion Staff", "🏮 ⋮ Gestion Abus", "perm ban", "perm juge"]
+
+@bot.listen("on_member_update")
+async def detect_impersonation(before, after):
+    """Détecte si un membre change de pseudo pour ressembler au staff"""
+    if before.display_name == after.display_name: return
+    guild = after.guild
+
+    # Récupérer les noms du staff
+    staff_names = []
+    for role_name in STAFF_ROLES_DETECT:
+        role = discord.utils.get(guild.roles, name=role_name)
+        if role:
+            for m in role.members:
+                staff_names.append(m.display_name.lower())
+
+    new_name = after.display_name.lower()
+
+    for staff_name in staff_names:
+        # Vérifier similarité (même nom ou très proche)
+        if (new_name == staff_name or
+            new_name in staff_name or
+            staff_name in new_name or
+            (len(staff_name) > 4 and staff_name[:4] in new_name)):
+
+            # Vérifier que ce n'est pas le membre lui-même
+            is_staff = any(r.name in STAFF_ROLES_DETECT for r in after.roles)
+            if is_staff: continue
+
+            e = discord.Embed(
+                title="⚠️ Usurpation d'Identité Détectée",
+                description=f"{after.mention} a changé son pseudo pour ressembler à un membre staff !",
+                color=discord.Color.red(), timestamp=datetime.utcnow()
+            )
+            e.set_thumbnail(url=after.display_avatar.url)
+            e.add_field(name="Avant", value=before.display_name)
+            e.add_field(name="Après", value=after.display_name)
+            e.add_field(name="Ressemble à", value=staff_name)
+            e.set_footer(text="Kozakura Security • Action manuelle requise")
+
+            staff_role = discord.utils.get(guild.roles, name="⛩️ ⋮ Gestion Staff")
+            await log_security(guild, e)
+            sec_ch = discord.utils.find(lambda c: any(n in c.name.lower() for n in SECURITY_LOG_NAMES), guild.text_channels)
+            if sec_ch:
+                mention = staff_role.mention if staff_role else ""
+                await sec_ch.send(f"🚨 {mention} **Usurpation d'identité !**", embed=e)
+            break
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🎉 SYSTÈME DE GIVEAWAY
+# ══════════════════════════════════════════════════════════════════════════════
+
+giveaways_db = {}  # {message_id: {...}}
+GIVEAWAY_EMOJI = "🎉"
+
+def parse_duration(duration_str):
+    """Convertit '10s', '5min', '2h', '1j' en secondes"""
+    duration_str = duration_str.lower().strip()
+    units = {"s": 1, "sec": 1, "min": 60, "m": 60, "h": 3600, "j": 86400, "d": 86400}
+    for unit, mult in sorted(units.items(), key=lambda x: -len(x[0])):
+        if duration_str.endswith(unit):
+            try:
+                return int(duration_str[:-len(unit)]) * mult
+            except Exception: pass
+    try:
+        return int(duration_str)
+    except Exception:
+        return None
+
+def format_duration(seconds):
+    """Formate les secondes en texte lisible"""
+    if seconds >= 86400:
+        return f"{seconds // 86400}j {(seconds % 86400) // 3600}h"
+    elif seconds >= 3600:
+        return f"{seconds // 3600}h {(seconds % 3600) // 60}min"
+    elif seconds >= 60:
+        return f"{seconds // 60}min {seconds % 60}s"
+    else:
+        return f"{seconds}s"
+
+async def end_giveaway(message_id, channel_id, guild_id):
+    """Termine un giveaway et tire le/les gagnant(s) avec vérification des conditions"""
+    await asyncio.sleep(0)
+
+    if message_id not in giveaways_db:
+        return
+
+    data    = giveaways_db[message_id]
+    guild   = bot.get_guild(guild_id)
+    channel = bot.get_channel(channel_id)
+    if not guild or not channel:
+        return
+
+    try:
+        msg = await channel.fetch_message(message_id)
+    except Exception:
+        return
+
+    # Conditions requises
+    min_messages = data.get("min_messages", 0)
+    require_vocal = data.get("require_vocal", False)
+
+    # Récupérer les participants (réaction 🎉)
+    raw_participants = []
+    for reaction in msg.reactions:
+        if str(reaction.emoji) == GIVEAWAY_EMOJI:
+            async for user in reaction.users():
+                if not user.bot:
+                    raw_participants.append(user)
+            break
+
+    # Filtrer selon les conditions
+    import random
+    valid_participants = []
+    disqualified = []
+
+    gid = str(guild.id)
+    for user in raw_participants:
+        member = guild.get_member(user.id)
+        if not member:
+            disqualified.append((user, "plus membre du serveur"))
+            continue
+
+        uid = str(user.id)
+
+        # Condition messages minimum
+        if min_messages > 0:
+            user_msgs = xp_db.get(gid, {}).get(uid, 0)
+            # On estime les messages via XP (1 msg = XP_PER_MSG XP)
+            estimated_msgs = user_msgs // XP_PER_MSG
+            if estimated_msgs < min_messages:
+                disqualified.append((user, f"messages insuffisants ({estimated_msgs}/{min_messages})"))
+                continue
+
+        # Condition vocal actif
+        if require_vocal:
+            in_voice = any(
+                member in vc.members
+                for vc in guild.voice_channels
+            )
+            if not in_voice:
+                disqualified.append((user, "pas en vocal"))
+                continue
+
+        valid_participants.append(user)
+
+    winners_count = data.get("winners", 1)
+    prize         = data["prize"]
+    host          = guild.get_member(data["host_id"])
+
+    e = discord.Embed(
+        title=f"🎉 GIVEAWAY TERMINÉ — {prize}",
+        color=discord.Color.dark_grey(),
+        timestamp=datetime.utcnow()
+    )
+
+    winners = []
+    if not valid_participants:
+        e.description = "😔 Aucun participant valide — pas de gagnant."
+        e.color = discord.Color.dark_red()
+        winners_mentions = "Aucun"
+    else:
+        count   = min(winners_count, len(valid_participants))
+        winners = random.sample(valid_participants, count)
+        winners_mentions = " ".join(w.mention for w in winners)
+        e.description = f"🏆 **Gagnant(s) :** {winners_mentions}\n\n🎁 **Prix :** {prize}"
+        e.color = discord.Color.gold()
+
+    if host:
+        e.add_field(name="👑 Organisé par", value=host.mention)
+    e.add_field(name="👥 Participants valides", value=f"{len(valid_participants)}/{len(raw_participants)}")
+
+    # Afficher les conditions
+    conds = []
+    if min_messages > 0: conds.append(f"📝 Min. {min_messages} messages")
+    if require_vocal:     conds.append("🎙️ Être en vocal")
+    if conds:
+        e.add_field(name="📋 Conditions", value="\n".join(conds), inline=False)
+
+    if disqualified:
+        e.add_field(
+            name=f"❌ Disqualifiés ({len(disqualified)})",
+            value="\n".join(f"• {u.mention} — {r}" for u, r in disqualified[:5]) +
+                  (f"\n*...et {len(disqualified)-5} autres*" if len(disqualified) > 5 else ""),
+            inline=False
+        )
+
+    e.set_footer(text="Giveaway terminé")
+    await msg.edit(embed=e)
+
+    if valid_participants:
+        host_str = host.mention if host else "l'organisateur"
+        await channel.send(
+            f"🎉 Félicitations {winners_mentions} ! Tu as gagné **{prize}** !\n"
+            f"Contacte {host_str} pour récupérer ton prix."
+        )
+
+    giveaways_db[message_id]["ended"]       = True
+    giveaways_db[message_id]["winners_ids"] = [w.id for w in winners]
+
+
+@bot.command()
+async def giveaway(ctx, duration: str, winners: str, *, prize: str):
+    """
+    !giveaway [durée] [nb]w [prix]
+    Options conditions (à ajouter à la fin du prix) :
+      --msgs [n]    → Minimum N messages requis
+      --vocal       → Être en vocal au moment du tirage
+
+    Exemples :
+      !giveaway 24h 1w Nitro Classic
+      !giveaway 30min 2w PSN 20€ --msgs 50
+      !giveaway 2h 1w Nitro --vocal
+      !giveaway 7j 1w Abonnement --msgs 100 --vocal
+    """
+    if not has_sanction_role(ctx.author, ROLES_BAN) and not ctx.author.guild_permissions.manage_guild:
+        return await ctx.send("❌ Tu n'as pas la permission de créer un giveaway.", delete_after=5)
+
+    seconds = parse_duration(duration)
+    if not seconds or seconds <= 0:
+        return await ctx.send("❌ Durée invalide. Exemples : `10s`, `30min`, `2h`, `7j`")
+
+    winners_str = winners.lower().replace("w", "").replace("x", "").strip()
+    try:
+        winners_count = max(1, int(winners_str))
+    except Exception:
+        return await ctx.send("❌ Nombre de gagnants invalide. Exemples : `1w`, `2w`")
+
+    # Parser les conditions dans le prix
+    min_messages  = 0
+    require_vocal = False
+    prize_clean   = prize
+
+    import re as _re
+    msgs_match = _re.search(r'--msgs?\s+(\d+)', prize)
+    if msgs_match:
+        min_messages = int(msgs_match.group(1))
+        prize_clean  = prize_clean.replace(msgs_match.group(0), "").strip()
+
+    if "--vocal" in prize_clean.lower():
+        require_vocal = True
+        prize_clean   = _re.sub(r'--vocal', '', prize_clean, flags=_re.IGNORECASE).strip()
+
+    end_time = datetime.utcnow() + timedelta(seconds=seconds)
+
+    # Construire la description avec conditions
+    conds_lines = []
+    if min_messages > 0: conds_lines.append(f"📝 Minimum **{min_messages} messages** sur le serveur")
+    if require_vocal:    conds_lines.append(f"🎙️ Être **en vocal** au moment du tirage")
+    conds_text = ("\n\n**📋 Conditions :**\n" + "\n".join(conds_lines)) if conds_lines else ""
+
+    e = discord.Embed(
+        title=f"🎉 GIVEAWAY — {prize_clean}",
+        description=(
+            f"Réagis avec {GIVEAWAY_EMOJI} pour participer !{conds_text}\n\n"
+            f"🎁 **Prix :** {prize_clean}\n"
+            f"🏆 **Gagnants :** {winners_count}\n"
+            f"⏰ **Fin dans :** {format_duration(seconds)}\n"
+            f"📅 **Se termine le :** <t:{int(end_time.timestamp())}:F>"
+        ),
+        color=discord.Color.blurple(),
+        timestamp=end_time
+    )
+    e.set_footer(text=f"Organisé par {ctx.author.display_name} • Se termine le")
+    if ctx.guild.icon:
+        e.set_thumbnail(url=ctx.guild.icon.url)
+
+    try: await ctx.message.delete()
+    except Exception: pass
+
+    msg = await ctx.send(embed=e)
+    await msg.add_reaction(GIVEAWAY_EMOJI)
+
+    giveaways_db[msg.id] = {
+        "prize":         prize_clean,
+        "winners":       winners_count,
+        "host_id":       ctx.author.id,
+        "channel_id":    ctx.channel.id,
+        "guild_id":      ctx.guild.id,
+        "end_time":      end_time.timestamp(),
+        "ended":         False,
+        "min_messages":  min_messages,
+        "require_vocal": require_vocal
+    }
+
+    asyncio.create_task(_giveaway_timer(msg.id, ctx.channel.id, ctx.guild.id, seconds))
+
+async def _giveaway_timer(message_id, channel_id, guild_id, seconds):
+    await asyncio.sleep(seconds)
+    await end_giveaway(message_id, channel_id, guild_id)
+
+@bot.command()
+async def greroll(ctx, message_id: int = None):
+    """!greroll [message_id] — Nouveau tirage"""
+    if not has_sanction_role(ctx.author, ROLES_BAN) and not ctx.author.guild_permissions.manage_guild:
+        return await ctx.send("❌ Tu n'as pas la permission.", delete_after=5)
+
+    if message_id is None:
+        for mid, data in reversed(list(giveaways_db.items())):
+            if data.get("ended") and data["channel_id"] == ctx.channel.id:
+                message_id = mid
+                break
+
+    if message_id not in giveaways_db:
+        return await ctx.send("❌ Giveaway introuvable.")
+
+    data    = giveaways_db[message_id]
+    channel = bot.get_channel(data["channel_id"])
+    guild   = bot.get_guild(data["guild_id"])
+
+    try:
+        msg = await channel.fetch_message(message_id)
+    except Exception:
+        return await ctx.send("❌ Message introuvable.")
+
+    import random
+    min_messages  = data.get("min_messages", 0)
+    require_vocal = data.get("require_vocal", False)
+    gid = str(guild.id)
+
+    valid = []
+    for reaction in msg.reactions:
+        if str(reaction.emoji) == GIVEAWAY_EMOJI:
+            async for user in reaction.users():
+                if user.bot: continue
+                member = guild.get_member(user.id)
+                if not member: continue
+                uid = str(user.id)
+                if min_messages > 0:
+                    if (xp_db.get(gid, {}).get(uid, 0) // XP_PER_MSG) < min_messages:
+                        continue
+                if require_vocal:
+                    if not any(member in vc.members for vc in guild.voice_channels):
+                        continue
+                valid.append(user)
+            break
+
+    if not valid:
+        return await ctx.send("😔 Aucun participant valide pour reroll.")
+
+    winner = random.choice(valid)
+    await ctx.send(f"🎉 Nouveau gagnant : {winner.mention} ! Félicitations pour **{data['prize']}** !")
+
+@bot.command()
+async def gend(ctx, message_id: int):
+    """!gend [message_id] — Termine un giveaway immédiatement"""
+    if not has_sanction_role(ctx.author, ROLES_BAN) and not ctx.author.guild_permissions.manage_guild:
+        return await ctx.send("❌ Tu n'as pas la permission.", delete_after=5)
+    if message_id not in giveaways_db:
+        return await ctx.send("❌ Giveaway introuvable.")
+    data = giveaways_db[message_id]
+    await end_giveaway(message_id, data["channel_id"], data["guild_id"])
+    await ctx.send("✅ Giveaway terminé.", delete_after=5)
+
+@bot.command()
+async def glist(ctx):
+    """!glist — Liste les giveaways actifs"""
+    actifs = [(mid, d) for mid, d in giveaways_db.items()
+              if not d.get("ended") and d["guild_id"] == ctx.guild.id]
+    e = discord.Embed(title="🎉 Giveaways Actifs", color=discord.Color.blurple(), timestamp=datetime.utcnow())
+    if not actifs:
+        e.description = "Aucun giveaway en cours."
+    else:
+        for mid, d in actifs:
+            ch        = bot.get_channel(d["channel_id"])
+            remaining = max(0, int(d["end_time"] - datetime.utcnow().timestamp()))
+            conds = []
+            if d.get("min_messages"): conds.append(f"📝 {d['min_messages']} msgs min")
+            if d.get("require_vocal"): conds.append("🎙️ Vocal requis")
+            e.add_field(
+                name=f"🎁 {d['prize']}",
+                value=(
+                    f"Salon : {ch.mention if ch else 'inconnu'}\n"
+                    f"Gagnants : {d['winners']}\n"
+                    f"Temps restant : {format_duration(remaining)}\n"
+                    + (f"Conditions : {' • '.join(conds)}\n" if conds else "") +
+                    f"ID : `{mid}`"
+                ),
+                inline=False
+            )
+    await ctx.send(embed=e)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🛡️ PROTECTION ANTI-BOT
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Charger la whitelist depuis le fichier
+_wl_data = load_json("bot_whitelist.json", [])
+BOT_WHITELIST = list(_wl_data) if isinstance(_wl_data, list) else []
+
+# Tracker anti-raid bots
+bot_raid_tracker = []
+
+# L'event on_member_join gère déjà les bots — on y ajoute la logique anti-bot
+# via une fonction séparée appelée depuis on_member_join
+
+async def check_antibot(member):
+    """Vérifie et kick les bots non autorisés"""
+    if not member.bot:
+        return
+    guild = member.guild
+
+    # Protection active ?
+    if not get_cfg(guild.id, "antibot_active", False):
+        return
+
+    # Bot dans la whitelist ?
+    if member.id in BOT_WHITELIST:
+        return
+
+    # Anti-raid bots : plusieurs bots en peu de temps
+    now = time.time()
+    bot_raid_tracker.append(now)
+    bot_raid_tracker[:] = [t for t in bot_raid_tracker if now - t < 30]
+
+    try:
+        await member.kick(reason="🛡️ Anti-bot : bot non autorisé")
+    except Exception:
+        pass  # Ignoré intentionnellement
+
+    e = discord.Embed(
+        title="🛡️ Bot Non Autorisé Kické",
+        description=f"**{member.name}** (`{member.id}`) a été expulsé automatiquement.",
+        color=discord.Color.dark_red(),
+        timestamp=datetime.utcnow()
+    )
+    e.add_field(name="ID Bot",   value=f"`{member.id}`")
+    e.add_field(name="Nom",      value=member.name)
+    e.add_field(name="Whitelist", value=f"Non autorisé\nUtilise `!addbotwhitelist {member.id}` pour l'autoriser")
+    e.set_thumbnail(url=member.display_avatar.url)
+
+    # Alerte si raid de bots
+    if len(bot_raid_tracker) >= 3:
+        e.add_field(name="⚠️ ALERTE RAID BOTS",
+            value=f"**{len(bot_raid_tracker)} bots** ont tenté de rejoindre en 30 secondes !",
+            inline=False)
+        e.color = discord.Color.dark_red()
+
+    await log(guild, e)
+
+    # Notif dans le salon de logs
+    log_ch_id = get_cfg(guild.id, "log_channel")
+    if log_ch_id:
+        ch = guild.get_channel(int(log_ch_id))
+        if ch:
+            await ch.send(
+                f"🚨 **Bot non autorisé expulsé :** `{member.name}` (`{member.id}`)\n"
+                f"Pour l'autoriser : `!addbotwhitelist {member.id}`"
+            )
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setantibotprotection(ctx, state: str = "on"):
+    """!setantibotprotection [on/off] — Active/désactive la protection anti-bot"""
+    active = state.lower() in ["on", "oui", "1", "true"]
+    set_cfg(ctx.guild.id, "antibot_active", active)
+    status = "✅ activée" if active else "❌ désactivée"
+    await ctx.send(f"🛡️ Protection anti-bot **{status}**.\n"
+        "Les bots non whitelistés seront automatiquement expulsés à leur arrivée.")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def addbotwhitelist(ctx, bot_id: int):
+    """!addbotwhitelist [id] — Ajoute un bot à la whitelist"""
+    if bot_id not in BOT_WHITELIST:
+        BOT_WHITELIST.append(bot_id)
+        save_json("bot_whitelist.json", BOT_WHITELIST)
+    try:
+        u = await bot.fetch_user(bot_id)
+        name = u.name
+    except Exception:
+        name = str(bot_id)
+    await ctx.send(f"✅ **{name}** (`{bot_id}`) autorisé.")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def removebotwhitelist(ctx, bot_id: int):
+    """!removebotwhitelist [id] — Retire un bot de la whitelist"""
+    if bot_id in BOT_WHITELIST:
+        BOT_WHITELIST.remove(bot_id)
+        save_json("bot_whitelist.json", BOT_WHITELIST)
+    await ctx.send(f"✅ Bot `{bot_id}` retiré de la whitelist.")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def botwhitelist(ctx):
+    """!botwhitelist — Affiche tous les bots autorisés"""
+    e = discord.Embed(
+        title="🤖 Bots Autorisés",
+        color=discord.Color.blurple(),
+        timestamp=datetime.utcnow()
+    )
+    active = get_cfg(ctx.guild.id, "antibot_active", False)
+    e.description = f"Protection anti-bot : {'✅ Active' if active else '❌ Inactive'}\n\n"
+    if not BOT_WHITELIST:
+        e.description += "Aucun bot en whitelist."
+    else:
+        lines = []
+        for bid in BOT_WHITELIST:
+            try:
+                u = await bot.fetch_user(bid)
+                lines.append(f"• **{u.name}** (`{bid}`)")
+            except Exception:
+                lines.append(f"• `{bid}`")
+        e.description += "\n".join(lines)
+    e.set_footer(text="!addbotwhitelist [id] pour ajouter | !setantibotprotection on/off")
+    await ctx.send(embed=e)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🔨 MASSBAN
+# ══════════════════════════════════════════════════════════════════════════════
+
+massban_queue = {}  # {guild_id: {"members": [...], "reason": str, "by": int}}
+
+@bot.command()
+async def massban(ctx, members: commands.Greedy[discord.Member], *, reason: str = "Mass ban"):
+    """
+    !massban @user1 @user2 @user3 [raison]
+    Prépare un mass ban — à confirmer avec !massbanconfirm
+    """
+    if not has_sanction_role(ctx.author, ROLES_BAN):
+        return await ctx.send("❌ Tu n'as pas la permission de bannir.", delete_after=5)
+
+    if not members:
+        return await ctx.send(
+            "❌ Mentionne au moins un membre.\n"
+            "Usage : `!massban @user1 @user2 raison`")
+
+    gid = str(ctx.guild.id)
+    massban_queue[gid] = {
+        "members": [m.id for m in members],
+        "reason":  reason,
+        "by":      ctx.author.id
+    }
+
+    e = discord.Embed(
+        title="⚠️ Mass Ban Préparé",
+        description=f"**{len(members)} membre(s)** vont être bannis.\nConfirme avec `!massbanconfirm` ou annule avec `!massbancancel`",
+        color=discord.Color.orange(),
+        timestamp=datetime.utcnow()
+    )
+    e.add_field(name="📋 Raison", value=reason, inline=False)
+    e.add_field(
+        name="👥 Membres ciblés",
+        value="\n".join(f"• {m.mention} (`{m.id}`)" for m in members[:20]) +
+              (f"\n*...et {len(members)-20} autres*" if len(members) > 20 else ""),
+        inline=False
+    )
+    e.add_field(name="🛡️ Préparé par", value=ctx.author.mention)
+    e.set_footer(text="⚠️ Cette action est irréversible — utilise !massbanconfirm pour confirmer")
+    await ctx.send(embed=e)
+
+@bot.command()
+async def massbanconfirm(ctx):
+    """!massbanconfirm — Exécute le mass ban préparé"""
+    if not has_sanction_role(ctx.author, ROLES_BAN):
+        return await ctx.send("❌ Tu n'as pas la permission de bannir.", delete_after=5)
+
+    gid = str(ctx.guild.id)
+    if gid not in massban_queue:
+        return await ctx.send("❌ Aucun mass ban en attente. Utilise d'abord `!massban @user1 @user2 raison`.")
+
+    data    = massban_queue[gid]
+    reason  = data["reason"]
+    ids     = data["members"]
+    prep_by = ctx.guild.get_member(data["by"])
+
+    # Vérif que c'est bien le même modérateur (ou un admin)
+    if ctx.author.id != data["by"] and not ctx.author.guild_permissions.administrator:
+        return await ctx.send("❌ Seul le modérateur qui a préparé le mass ban peut le confirmer.")
+
+    msg = await ctx.send(f"⏳ Mass ban en cours... **0/{len(ids)}** bannis")
+
+    success, failed = [], []
+    for i, uid in enumerate(ids):
+        try:
+            member = ctx.guild.get_member(uid)
+            if member:
+                await dm(member, "🔨 Tu as été banni",
+                    f"**Serveur :** {ctx.guild.name}\n**Raison :** {reason}",
+                    color=discord.Color.dark_red())
+                await member.ban(reason=f"[MassBan] {reason}")
+            else:
+                user = await bot.fetch_user(uid)
+                await ctx.guild.ban(user, reason=f"[MassBan] {reason}")
+            success.append(uid)
+        except Exception as ex:
+            failed.append(uid)
+
+        # Mise à jour progress tous les 3 bans
+        if (i + 1) % 3 == 0:
+            try:
+                await msg.edit(content=f"⏳ Mass ban en cours... **{i+1}/{len(ids)}** bannis")
+            except Exception: pass
+        await asyncio.sleep(0.5)  # Évite le rate limit
+
+    del massban_queue[gid]
+
+    e = discord.Embed(
+        title="🔨 Mass Ban Exécuté",
+        color=discord.Color.dark_red(),
+        timestamp=datetime.utcnow()
+    )
+    e.add_field(name="✅ Bannis",   value=str(len(success)))
+    e.add_field(name="❌ Échoués", value=str(len(failed)))
+    e.add_field(name="📋 Raison",  value=reason, inline=False)
+    e.add_field(name="🛡️ Par",     value=ctx.author.mention)
+    if failed:
+        fail_mentions = ", ".join(f"`{i}`" for i in failed[:10])
+        e.add_field(name="⚠️ IDs échoués", value=fail_mentions, inline=False)
+    e.set_footer(text=ctx.guild.name)
+
+    await msg.edit(content="", embed=e)
+
+    # Log dans sanction
+    await log(ctx.guild, e)
+
+@bot.command()
+async def massbancancel(ctx):
+    """!massbancancel — Annule le mass ban en attente"""
+    gid = str(ctx.guild.id)
+    if gid not in massban_queue:
+        return await ctx.send("❌ Aucun mass ban en attente.")
+    del massban_queue[gid]
+    await ctx.send("✅ Mass ban annulé.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.command(name="addrole")
+@commands.has_permissions(manage_roles=True)
+async def addrole(ctx, member: discord.Member, *, arg: str):
+    """!addrole @membre @role — Donne un rôle à un membre"""
+    role = await resolve_role(ctx, arg)
+    if not role:
+        return await ctx.send("❌ Rôle introuvable. Utilise `!addrole @membre @role` ou le nom exact.")
+
+    if role in member.roles:
+        return await ctx.send(f"❌ {member.mention} possède déjà le rôle {role.mention}.")
+
+    try:
+        await member.add_roles(role, reason=f"Ajouté par {ctx.author}")
+    except discord.Forbidden:
+        return await ctx.send("❌ Je n'ai pas la permission d'attribuer ce rôle. Vérifie ma hiérarchie.")
+
+    e = discord.Embed(
+        title="✅ Rôle Ajouté",
+        description=f"{role.mention} a été donné à {member.mention}",
+        color=role.color if role.color.value else discord.Color.green(),
+        timestamp=datetime.utcnow()
+    )
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.add_field(name="Membre",     value=f"{member} (`{member.id}`)")
+    e.add_field(name="Rôle",       value=role.mention)
+    e.add_field(name="Par",        value=ctx.author.mention)
+    e.set_footer(text=ctx.guild.name)
+    await ctx.send(embed=e)
+    await log(ctx.guild, e)
+
+@bot.command(name="delrole")
+@commands.has_permissions(manage_roles=True)
+async def delrole(ctx, member: discord.Member, *, arg: str):
+    """!delrole @membre @role — Retire un rôle à un membre"""
+    role = await resolve_role(ctx, arg)
+    if not role:
+        return await ctx.send("❌ Rôle introuvable. Utilise `!delrole @membre @role` ou le nom exact.")
+
+    if role not in member.roles:
+        return await ctx.send(f"❌ {member.mention} n'a pas le rôle {role.mention}.")
+
+    try:
+        await member.remove_roles(role, reason=f"Retiré par {ctx.author}")
+    except discord.Forbidden:
+        return await ctx.send("❌ Je n'ai pas la permission de retirer ce rôle. Vérifie ma hiérarchie.")
+
+    e = discord.Embed(
+        title="🗑️ Rôle Retiré",
+        description=f"{role.mention} a été retiré de {member.mention}",
+        color=discord.Color.red(),
+        timestamp=datetime.utcnow()
+    )
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.add_field(name="Membre", value=f"{member} (`{member.id}`)")
+    e.add_field(name="Rôle",   value=role.mention)
+    e.add_field(name="Par",    value=ctx.author.mention)
+    e.set_footer(text=ctx.guild.name)
+    await ctx.send(embed=e)
+    await log(ctx.guild, e)
+
+@bot.command(name="mv")
+async def mv(ctx, member: discord.Member, *, channel_arg: str = None):
+    """
+    !mv @membre [salon vocal]  — Déplace un membre dans un salon vocal
+    !mv @membre                — Déplace le membre dans ton salon vocal actuel
+    """
+    if not has_sanction_role(ctx.author, ROLES_BAN) and not ctx.author.guild_permissions.move_members:
+        return await ctx.send("❌ Tu n'as pas la permission de déplacer des membres.", delete_after=5)
+
+    # Vérifier que le membre est en vocal
+    if not member.voice or not member.voice.channel:
+        return await ctx.send(f"❌ {member.mention} n'est pas dans un salon vocal.")
+
+    # Trouver le salon cible
+    if channel_arg:
+        # Chercher par nom ou ID
+        target_channel = discord.utils.find(
+            lambda c: channel_arg.lower() in c.name.lower() or str(c.id) == channel_arg.strip("<#>"),
+            ctx.guild.voice_channels
+        )
+        if not target_channel:
+            # Lister les salons disponibles
+            salons = "\n".join(f"• `{c.name}`" for c in ctx.guild.voice_channels)
+            return await ctx.send(f"❌ Salon vocal introuvable.\n**Salons disponibles :**\n{salons}")
+    else:
+        # Déplacer dans le vocal de l'auteur
+        if not ctx.author.voice or not ctx.author.voice.channel:
+            return await ctx.send("❌ Précise un salon vocal ou rejoins-en un toi-même.\nUsage : `!mv @membre nom-du-salon`")
+        target_channel = ctx.author.voice.channel
+
+    from_channel = member.voice.channel
+
+    # Même salon ?
+    if from_channel == target_channel:
+        return await ctx.send(f"❌ {member.mention} est déjà dans **{target_channel.name}**.")
+
+    try:
+        await member.move_to(target_channel, reason=f"Déplacé par {ctx.author}")
+    except discord.Forbidden:
+        return await ctx.send("❌ Je n'ai pas la permission de déplacer ce membre.")
+
+    e = discord.Embed(
+        title="🔀 Membre Déplacé",
+        color=discord.Color.blurple(),
+        timestamp=datetime.utcnow()
+    )
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.add_field(name="👤 Membre",   value=member.mention)
+    e.add_field(name="📤 Depuis",   value=f"🔊 {from_channel.name}")
+    e.add_field(name="📥 Vers",     value=f"🔊 {target_channel.name}")
+    e.add_field(name="🛡️ Par",      value=ctx.author.mention)
+    e.set_footer(text=ctx.guild.name)
+    await ctx.send(embed=e, delete_after=10)
+    await log(ctx.guild, e)
+
+
+# Tracker pour le mode dog {follower_id: target_id}
+dog_followers = {}
+
+@bot.command(name="dog")
+async def dog(ctx, member: discord.Member):
+    """!dog @membre — Force le membre à suivre tes déplacements vocaux + emoji 🐕"""
+    if not has_sanction_role(ctx.author, ROLES_BAN) and not ctx.author.guild_permissions.move_members:
+        return await ctx.send("❌ Tu n'as pas la permission.", delete_after=5)
+
+    if not member.voice or not member.voice.channel:
+        return await ctx.send(f"❌ {member.mention} n'est pas en vocal.")
+
+    # Activer le mode dog
+    dog_followers[str(member.id)] = str(ctx.author.id)
+
+    # Ajouter 🐕 au pseudo si pas déjà présent
+    old_nick = member.display_name
+    if "🐕" not in old_nick:
+        try:
+            await member.edit(nick=f"🐕 {old_nick[:30]}", reason=f"Dog par {ctx.author}")
+        except discord.Forbidden:
+            pass  # Pas de permission pour changer le pseudo
+
+    # Déplacer immédiatement dans le salon de l'auteur si en vocal
+    if ctx.author.voice and ctx.author.voice.channel:
+        try:
+            await member.move_to(ctx.author.voice.channel, reason=f"Dog par {ctx.author}")
+        except Exception: pass
+
+    e = discord.Embed(
+        title="🐕 Mode Dog Activé !",
+        description=f"{member.mention} va maintenant **suivre** {ctx.author.mention} en vocal.",
+        color=discord.Color.orange(),
+        timestamp=datetime.utcnow()
+    )
+    e.add_field(name="🐾 Comportement", value="Se déplace automatiquement dans chaque salon vocal de son maître")
+    e.add_field(name="🔓 Pour libérer", value=f"`!undog @{member.name}`")
+    e.set_thumbnail(url=member.display_avatar.url)
+    await ctx.send(embed=e, delete_after=30)
+
+@bot.command(name="undog")
+async def undog(ctx, member: discord.Member):
+    """!undog @membre — Libère un membre du mode dog"""
+    if not has_sanction_role(ctx.author, ROLES_BAN) and not ctx.author.guild_permissions.move_members:
+        return await ctx.send("❌ Tu n'as pas la permission.", delete_after=5)
+
+    uid = str(member.id)
+    if uid in dog_followers:
+        del dog_followers[uid]
+
+    # Retirer le 🐕 du pseudo
+    if "🐕" in member.display_name:
+        try:
+            new_nick = member.display_name.replace("🐕 ", "").replace("🐕", "").strip()
+            await member.edit(nick=new_nick or None, reason=f"Undog par {ctx.author}")
+        except discord.Forbidden:
+            pass
+
+    e = discord.Embed(
+        title="🔓 Mode Dog Désactivé",
+        description=f"{member.mention} est libre ! Le mode dog a été retiré.",
+        color=discord.Color.green(), timestamp=datetime.utcnow()
+    )
+    await ctx.send(embed=e, delete_after=15)
+
+
+@bot.command(name="unmuteall")
+async def unmute_all(ctx):
+    """!unmuteall — Démute tous les membres actuellement mutes (timeout)"""
+    if not has_sanction_role(ctx.author, ROLES_MUTE):
+        return await ctx.send("❌ Tu n'as pas la permission.", delete_after=5)
+
+    count = 0
+    failed = 0
+    msg = await ctx.send("⏳ Démute en cours...")
+
+    for member in ctx.guild.members:
+        if member.is_timed_out():
+            try:
+                await member.timeout(None, reason=f"Unmute global par {ctx.author}")
+                count += 1
+            except Exception:
+                failed += 1
+
+    e = discord.Embed(
+        title="🔊 Unmute Global",
+        description=f"**{count}** membre(s) démutés" + (f"\n❌ {failed} échec(s)" if failed else ""),
+        color=discord.Color.green(),
+        timestamp=datetime.utcnow()
+    )
+    e.add_field(name="🛡️ Par", value=ctx.author.mention)
+    await msg.edit(content="", embed=e)
+
+@bot.command(name="pic")
+async def pic(ctx, member: discord.Member = None):
+    """!pic [@membre] — Affiche la photo de profil d'un membre"""
+    member = member or ctx.author
+    e = discord.Embed(
+        title=f"🖼️ Photo de profil — {member.display_name}",
+        color=member.color if member.color.value else discord.Color.blurple(),
+        timestamp=datetime.utcnow()
+    )
+    # Avatar serveur si disponible
+    guild_avatar = member.guild_avatar
+    if guild_avatar:
+        e.set_image(url=guild_avatar.url)
+        e.add_field(name="Avatar du serveur", value=f"[Télécharger]({guild_avatar.url})")
+    else:
+        e.set_image(url=member.display_avatar.url)
+        e.add_field(name="Avatar global", value=f"[Télécharger]({member.display_avatar.url})")
+    e.set_footer(text=f"ID : {member.id}")
+    await ctx.send(embed=e)
+
+@bot.command(name="banner")
+async def banner(ctx, member: discord.Member = None):
+    """!banner [@membre] — Affiche la bannière de profil d'un membre"""
+    member = member or ctx.author
+    try:
+        # Fetch complet pour avoir la bannière
+        user = await bot.fetch_user(member.id)
+        if not user.banner:
+            return await ctx.send(f"❌ {member.mention} n'a pas de bannière de profil.")
+        e = discord.Embed(
+            title=f"🎨 Bannière — {member.display_name}",
+            color=member.color if member.color.value else discord.Color.blurple(),
+            timestamp=datetime.utcnow()
+        )
+        e.set_image(url=user.banner.url)
+        e.add_field(name="Télécharger", value=f"[Cliquer ici]({user.banner.url})")
+        e.set_footer(text=f"ID : {member.id}")
+        await ctx.send(embed=e)
+    except Exception:
+        await ctx.send(f"❌ Impossible de récupérer la bannière de {member.mention}.")
+
+   # Rôle qui peut faire !tribunal
+VOTES_NECESSAIRES = 4            # Votes nécessaires pour valider une décision
+
+tribunal_votes = {}  # {message_id: {"pour": [], "contre": [], "data": {...}}}
+
+class TribunalView(discord.ui.View):
+    def __init__(self, accused_id, moderator_id, motif, vote_type):
+        super().__init__(timeout=None)
+        self.accused_id   = accused_id
+        self.moderator_id = moderator_id
+        self.motif        = motif
+        self.vote_type    = vote_type  # "ban", "kick", "mute"
+
+    async def update_embed(self, interaction, data):
+        guild = interaction.guild
+        accused = guild.get_member(self.accused_id)
+
+        pour_list   = data["pour"]
+        contre_list = data["contre"]
+
+        # Formater les votes
+        def fmt_votes(lst):
+            lines = ""
+            for uid in lst:
+                m = guild.get_member(uid)
+                lines += f"Vote x{lst.index(uid)+1} @{m.display_name if m else uid}\nJuge :\n"
+            return lines if lines else "*(aucun vote)*"
+
+        emojis_type = {"ban": "🔨", "kick": "👟", "mute": "🔇"}
+        titles_type = {"ban": "VOTE BANNISSEMENT", "kick": "VOTE EXPULSION", "mute": "VOTE MUTE"}
+        colors_type = {"ban": discord.Color.dark_red(), "kick": discord.Color.orange(), "mute": discord.Color.greyple()}
+
+        emoji = emojis_type.get(self.vote_type, "⚖️")
+        title = titles_type.get(self.vote_type, "VOTE TRIBUNAL")
+        color = colors_type.get(self.vote_type, discord.Color.blurple())
+
+        mod = guild.get_member(self.moderator_id)
+
+        e = discord.Embed(title=f"⚖️ — {title}", color=color)
+        e.add_field(name="",
+            value=(
+                f"✖️ - Modérateur > {mod.mention if mod else 'Inconnu'}\n"
+                f"🔵 - Membre > {accused.mention if accused else f'`{self.accused_id}`'}\n"
+                f"✅ - Motif > {self.motif}"
+            ), inline=False)
+
+        e.add_field(name=f"Votes Pour 👍",   value=fmt_votes(pour_list),   inline=True)
+        e.add_field(name=f"Votes Contre 👎", value=fmt_votes(contre_list), inline=True)
+
+        e.set_image(url="https://i.imgur.com/tribunal_hammer.jpg")  # image optionnelle
+        e.set_footer(text=f"{VOTES_NECESSAIRES} votes pour l'un des deux côtés sont nécessaires.")
+
+        return e
+
+    @discord.ui.button(label="Pour", style=discord.ButtonStyle.green, custom_id="trib_pour")
+    async def vote_pour(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await self._vote(interaction, "pour")
+
+    @discord.ui.button(label="Contre", style=discord.ButtonStyle.grey, custom_id="trib_contre")
+    async def vote_contre(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await self._vote(interaction, "contre")
+
+    @discord.ui.button(label="Bannir", style=discord.ButtonStyle.red, custom_id="trib_bannir")
+    async def vote_bannir(self, interaction: discord.Interaction, _: discord.ui.Button):
+        # Seulement si assez de votes Pour
+        mid  = str(interaction.message.id)
+        data = tribunal_votes.get(mid, {"pour": [], "contre": []})
+        if len(data["pour"]) < VOTES_NECESSAIRES:
+            return await interaction.response.send_message(
+                f"❌ Il faut **{VOTES_NECESSAIRES} votes Pour** avant d'exécuter la sanction.", ephemeral=True)
+
+        # Vérif permission juge
+        juge_role = discord.utils.get(interaction.guild.roles, name=ROLE_JUGE)
+        if juge_role and juge_role not in interaction.user.roles:
+            return await interaction.response.send_message("❌ Tu n'as pas le rôle **perm juge**.", ephemeral=True)
+
+        guild   = interaction.guild
+        accused = guild.get_member(self.accused_id)
+        if not accused:
+            return await interaction.response.send_message("❌ Membre introuvable.", ephemeral=True)
+
+        try:
+            if self.vote_type == "ban":
+                await dm(accused, "🔨 Tu as été banni par le tribunal",
+                    f"**Serveur :** {guild.name}\n**Motif :** {self.motif}",
+                    color=discord.Color.dark_red())
+                await accused.ban(reason=f"[Tribunal] {self.motif}")
+                action = "banni"
+            elif self.vote_type == "kick":
+                await dm(accused, "👟 Tu as été expulsé par le tribunal",
+                    f"**Serveur :** {guild.name}\n**Motif :** {self.motif}",
+                    color=discord.Color.orange())
+                await accused.kick(reason=f"[Tribunal] {self.motif}")
+                action = "expulsé"
+            elif self.vote_type == "mute":
+                until = discord.utils.utcnow() + timedelta(hours=24)
+                await accused.timeout(until, reason=f"[Tribunal] {self.motif}")
+                action = "muté (24h)"
+        except discord.Forbidden:
+            return await interaction.response.send_message("❌ Permission insuffisante.", ephemeral=True)
+
+        # Désactiver les boutons
+        for child in self.children:
+            child.disabled = True
+
+        e = discord.Embed(
+            title=f"⚖️ Tribunal — Verdict Rendu",
+            description=f"{accused.mention if accused else self.accused_id} a été **{action}** par décision du tribunal.\n**Motif :** {self.motif}",
+            color=discord.Color.dark_red(),
+            timestamp=datetime.utcnow()
+        )
+        e.add_field(name="Votes Pour",   value=str(len(data["pour"])))
+        e.add_field(name="Votes Contre", value=str(len(data["contre"])))
+        e.add_field(name="Exécuté par",  value=interaction.user.mention)
+        e.set_footer(text=guild.name)
+
+        await interaction.message.edit(embed=e, view=self)
+        await interaction.response.send_message(f"✅ {accused.mention} a été **{action}**.", ephemeral=True)
+
+        # Log sanction
+        await log_sanction(guild, accused, self.vote_type.capitalize(),
+            f"[Tribunal] {self.motif}", interaction.user)
+
+    async def _vote(self, interaction: discord.Interaction, side: str):
+        # Vérif rôle juge
+        juge_role = discord.utils.get(interaction.guild.roles, name=ROLE_JUGE)
+        if juge_role and juge_role not in interaction.user.roles:
+            return await interaction.response.send_message(
+                f"❌ Seuls les membres avec le rôle **{ROLE_JUGE}** peuvent voter.", ephemeral=True)
+
+        mid  = str(interaction.message.id)
+        tribunal_votes.setdefault(mid, {"pour": [], "contre": [], "data": {}})
+        data = tribunal_votes[mid]
+
+        uid = interaction.user.id
+
+        # Retirer vote opposé si existant
+        other = "contre" if side == "pour" else "pour"
+        if uid in data[other]:
+            data[other].remove(uid)
+
+        # Toggle vote
+        if uid in data[side]:
+            data[side].remove(uid)
+            await interaction.response.send_message(f"↩️ Ton vote **{side}** a été retiré.", ephemeral=True)
+        else:
+            data[side].append(uid)
+            await interaction.response.send_message(f"✅ Vote **{side}** enregistré !", ephemeral=True)
+
+        # Mettre à jour l'embed
+        new_embed = await self.update_embed(interaction, data)
+        await interaction.message.edit(embed=new_embed)
+
+@bot.command(name="tribunal")
+async def tribunal(ctx, accused: discord.Member, vote_type: str = "ban", *, motif: str = "Aucun motif"):
+    """
+    !tribunal @membre [ban/kick/mute] [motif]
+    Nécessite le rôle 'perm juge'
+    """
+    # Vérif rôle juge
+    juge_role = discord.utils.get(ctx.guild.roles, name=ROLE_JUGE)
+    if juge_role and juge_role not in ctx.author.roles:
+        return await ctx.send(f"❌ Seuls les membres avec le rôle **{ROLE_JUGE}** peuvent ouvrir un tribunal.")
+
+    # Vérif type de vote
+    vote_type = vote_type.lower()
+    if vote_type not in ["ban", "kick", "mute"]:
+        return await ctx.send("❌ Type invalide. Utilise `ban`, `kick` ou `mute`.")
+
+    # Vérif salon tribunal
+    tribunal_ch = discord.utils.find(
+        lambda c: "tribunal" in c.name.lower(), ctx.guild.text_channels)
+    target_ch = tribunal_ch or ctx.channel
+
+    emojis_type = {"ban": "🔨", "kick": "👟", "mute": "🔇"}
+    titles_type = {"ban": "VOTE BANNISSEMENT", "kick": "VOTE EXPULSION", "mute": "VOTE MUTE"}
+    colors_type = {"ban": discord.Color.dark_red(), "kick": discord.Color.orange(), "mute": discord.Color.greyple()}
+
+    e = discord.Embed(
+        title=f"⚖️ — {titles_type[vote_type]}",
+        color=colors_type[vote_type],
+        timestamp=datetime.utcnow()
+    )
+    e.add_field(name="",
+        value=(
+            f"✖️ - Modérateur > {ctx.author.mention}\n"
+            f"🔵 - Membre > {accused.mention}\n"
+            f"✅ - Motif > {motif}"
+        ), inline=False)
+    e.add_field(name="Votes Pour 👍",   value="*(aucun vote)*", inline=True)
+    e.add_field(name="Votes Contre 👎", value="*(aucun vote)*", inline=True)
+    e.set_footer(text=f"{VOTES_NECESSAIRES} votes pour l'un des deux côtés sont nécessaires.")
+    e.set_thumbnail(url=accused.display_avatar.url)
+
+    view = TribunalView(accused.id, ctx.author.id, motif, vote_type)
+    msg  = await target_ch.send(embed=e, view=view)
+
+    # Enregistrer le vote
+    tribunal_votes[str(msg.id)] = {"pour": [], "contre": [], "data": {}}
+
+    if target_ch != ctx.channel:
+        await ctx.send(f"⚖️ Vote tribunal ouvert dans {target_ch.mention} !", delete_after=5)
+    try:
+        await ctx.message.delete()
+    except Exception: pass
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.command(name="text")
+@commands.has_permissions(administrator=True)
+async def send_text(ctx, *, contenu: str):
+    """
+    !text [contenu] — Envoie un message personnalisé permanent dans ce salon.
+
+    Formatage disponible :
+      **gras**   __souligné__   *italique*   ~~barré~~
+      `code`     > citation
+      Saut de ligne : écrire \\n dans la commande
+
+    Exemples :
+      !text Bienvenue sur le serveur !
+      !text **Règlement**\\n> 1. Soyez respectueux\\n> 2. Pas de spam
+    """
+
+    # Remplace les \n littéraux et | par de vrais sauts de ligne
+    contenu = contenu.replace("\\n", "\n").replace(r"\n", "\n").replace(" | ", "\n").replace("|", "\n")
+
+    # Supprimer le message de commande pour ne laisser que le résultat
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass  # Ignoré intentionnellement
+
+    await ctx.send(contenu)
+
+@bot.command(name="embed")
+@commands.has_permissions(administrator=True)
+async def send_embed(ctx, titre: str, couleur: str = "bleu", *, contenu: str):
+    """
+    !embed "Titre" [couleur] [contenu] — Envoie un embed personnalisé permanent.
+
+    Couleurs : rouge, vert, bleu, or, violet, orange, gris
+    Saut de ligne : \\n
+
+    Exemple :
+      !embed "📜 Règlement" rouge Règle 1 : Sois respectueux\\nRègle 2 : Pas de spam
+    """
+
+    couleurs = {
+        "rouge":  discord.Color.red(),
+        "vert":   discord.Color.green(),
+        "bleu":   discord.Color.blurple(),
+        "or":     discord.Color.gold(),
+        "violet": discord.Color.purple(),
+        "orange": discord.Color.orange(),
+        "gris":   discord.Color.greyple(),
+        "noir":   discord.Color.dark_gray(),
+        "blanc":  discord.Color.light_gray(),
+    }
+
+    color = couleurs.get(couleur.lower(), discord.Color.blurple())
+    contenu = contenu.replace("\\n", "\n")
+
+    e = discord.Embed(title=titre, description=contenu, color=color)
+    if ctx.guild.icon:
+        e.set_footer(text=ctx.guild.name, icon_url=ctx.guild.icon.url)
+
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass  # Ignoré intentionnellement
+
+    await ctx.send(embed=e)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🤖 COMMANDES IA
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.command(name="ai")
+async def ai_command(ctx, *, question: str):
+    """!ai [question] — Pose une question à l'IA Kozakura"""
+    if not GROQ_API_KEY:
+        return await ctx.send("❌ L'IA n'est pas configurée (clé GROQ manquante).")
+
+    async with ctx.typing():
+        messages = [{"role": "user", "content": f"{ctx.author.display_name}: {question}"}]
+        response = await call_groq(messages)
+
+    e = discord.Embed(
+        description=response,
+        color=discord.Color.blurple(),
+        timestamp=datetime.utcnow()
+    )
+    e.set_author(name=f"🤖 Kozakura AI — réponse à {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
+    e.set_footer(text="Powered by Groq • Llama 3")
+    await ctx.reply(embed=e)
+
+@bot.command(name="announce")
+@commands.has_permissions(administrator=True)
+async def ai_announce(ctx, *, sujet: str):
+    """!announce [sujet] — Génère une annonce stylée avec l'IA"""
+    if not GROQ_API_KEY:
+        return await ctx.send("❌ L'IA n'est pas configurée.")
+
+    async with ctx.typing():
+        messages = [{
+            "role": "user",
+            "content": f"Génère une annonce Discord professionnelle et engageante pour un serveur Discord sur ce sujet : {sujet}. "
+                      f"Utilise des emojis Discord, du **gras**, et structure bien l'annonce. Maximum 400 mots. "
+                      f"Le serveur s'appelle Kozakura."
+        }]
+        response = await call_groq(messages)
+
+    e = discord.Embed(
+        title="📢 Annonce",
+        description=response,
+        color=discord.Color.blurple(),
+        timestamp=datetime.utcnow()
+    )
+    if ctx.guild.icon:
+        e.set_thumbnail(url=ctx.guild.icon.url)
+    e.set_footer(text=f"Annonce générée par {ctx.author.display_name}")
+
+    # Demander confirmation
+    confirm_msg = await ctx.send(
+        "Voici l'annonce générée. Réagis avec ✅ pour l'envoyer dans ce salon, ❌ pour annuler.",
+        embed=e
+    )
+    await confirm_msg.add_reaction("✅")
+    await confirm_msg.add_reaction("❌")
+
+    def check(reaction, user):
+        return user == ctx.author and str(reaction.emoji) in ["✅", "❌"] and reaction.message.id == confirm_msg.id
+
+    try:
+        reaction, _ = await bot.wait_for("reaction_add", timeout=30.0, check=check)
+        if str(reaction.emoji) == "✅":
+            await ctx.send(embed=e)
+            await confirm_msg.delete()
+            await ctx.message.delete()
+        else:
+            await confirm_msg.delete()
+            await ctx.send("❌ Annonce annulée.", delete_after=5)
+    except asyncio.TimeoutError:
+        await confirm_msg.delete()
+
+@bot.command(name="resume")
+@commands.has_permissions(kick_members=True)
+async def ai_resume(ctx, nb_messages: int = 20):
+    """!resume [nb] — Résume les derniers messages du salon avec l'IA"""
+    if not GROQ_API_KEY:
+        return await ctx.send("❌ L'IA n'est pas configurée.")
+
+    nb_messages = min(nb_messages, 50)
+
+    async with ctx.typing():
+        messages_history = []
+        async for msg in ctx.channel.history(limit=nb_messages + 1):
+            if msg.id != ctx.message.id and not msg.author.bot:
+                messages_history.append(f"{msg.author.display_name}: {msg.content[:200]}")
+
+        messages_history.reverse()
+        conversation = "\n".join(messages_history)
+
+        if not conversation:
+            return await ctx.send("❌ Pas assez de messages à résumer.")
+
+        prompt = [{
+            "role": "user",
+            "content": f"Résume cette conversation Discord en français de manière concise et claire. "
+                      f"Identifie les sujets principaux, les points importants et l'ambiance générale :\n\n{conversation}"
+        }]
+        response = await call_groq(prompt)
+
+    e = discord.Embed(
+        title=f"📝 Résumé des {nb_messages} derniers messages",
+        description=response,
+        color=discord.Color.gold(),
+        timestamp=datetime.utcnow()
+    )
+    e.set_footer(text=f"Résumé par Kozakura AI • {ctx.channel.name}")
+    await ctx.reply(embed=e)
+
+@bot.command(name="analyse")
+@commands.has_permissions(kick_members=True)
+async def ai_analyse(ctx, member: discord.Member):
+    """!analyse @membre — Analyse le comportement d'un membre avec l'IA"""
+    if not GROQ_API_KEY:
+        return await ctx.send("❌ L'IA n'est pas configurée.")
+
+    gid = str(ctx.guild.id)
+    uid = str(member.id)
+
+    # Récupérer les données du membre
+    sanctions = sanctions_db.get(gid, {}).get(uid, [])
+    warnings  = warnings_db.get(gid, {}).get(uid, [])
+    xp        = xp_db.get(gid, {}).get(uid, 0)
+    level     = get_level(xp)
+    trophees  = trophees_db.get(gid, {}).get(uid, {})
+
+    async with ctx.typing():
+        data_str = (
+            f"Membre : {member.display_name}\n"
+            f"Niveau XP : {level} ({xp} XP)\n"
+            f"Sanctions totales : {len(sanctions)}\n"
+            f"Avertissements : {len(warnings)}\n"
+            f"Votes trophée : {trophees.get('votes', 0)}\n"
+            f"Temps vocal : {trophees.get('voice_minutes', 0) // 60}h\n"
+            f"Types sanctions : {', '.join(set(s['type'] for s in sanctions)) if sanctions else 'aucune'}\n"
+            f"Dernière sanction : {sanctions[-1]['date'][:10] if sanctions else 'jamais'}"
+        )
+
+        prompt = [{
+            "role": "user",
+            "content": f"Analyse ce profil de membre Discord et donne une évaluation de son comportement, "
+                      f"ses points positifs, ses points négatifs, et une recommandation pour le staff. "
+                      f"Sois objectif et professionnel :\n\n{data_str}"
+        }]
+        response = await call_groq(prompt)
+
+    e = discord.Embed(
+        title=f"🔍 Analyse IA — {member.display_name}",
+        description=response,
+        color=discord.Color.blurple(),
+        timestamp=datetime.utcnow()
+    )
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.add_field(name="📊 Stats rapides",
+                value=f"Niv. {level} | {len(sanctions)} sanctions | {len(warnings)} warns",
+                inline=False)
+    e.set_footer(text="Analyse générée par Kozakura AI")
+    await ctx.reply(embed=e)
+
+@bot.command(name="clearmemory")
+async def ai_clear_memory(ctx):
+    """!clearmemory — Efface la mémoire de conversation avec l'IA"""
+    uid = str(ctx.author.id)
+    if uid in ai_conversations:
+        del ai_conversations[uid]
+    await ctx.send("🧠 Mémoire de conversation effacée ! Je repars de zéro.", delete_after=10)
+
+@bot.command(name="setaichannel")
+@commands.has_permissions(administrator=True)
+async def set_ai_channel(ctx, *, arg: str):
+    """!setaichannel #salon — Définit le salon IA principal"""
+    channel = await resolve_channel(ctx, arg)
+    if not channel: return await ctx.send("❌ Salon introuvable.")
+    set_cfg(ctx.guild.id, "ai_channel", channel.id)
+    await ctx.send(f"✅ Salon IA → {channel.mention}\nLe bot répondra automatiquement dans ce salon.")
+
+# ─── RÉSUMÉ AUTOMATIQUE À LA FERMETURE DES TICKETS ───────────────────────────
+async def ai_summarize_ticket(guild, channel, ticket_data):
+    """Résume automatiquement un ticket à sa fermeture"""
+    if not GROQ_API_KEY:
+        return
+
+    try:
+        messages_history = []
+        async for msg in channel.history(limit=100):
+            if not msg.author.bot:
+                messages_history.append(f"{msg.author.display_name}: {msg.content[:200]}")
+
+        messages_history.reverse()
+        conversation = "\n".join(messages_history[:50])
+
+        if not conversation:
+            return
+
+        prompt = [{
+            "role": "user",
+            "content": f"Résume ce ticket de support Discord en 3-4 lignes max. "
+                      f"Indique : le problème signalé, comment il a été résolu (si applicable), "
+                      f"et le ton général de l'échange. Sois concis :\n\n{conversation}"
+        }]
+
+        summary = await call_groq(prompt)
+
+        # Envoyer le résumé dans les logs tickets
+        log_ch_id = get_cfg(guild.id, "ticket_log_channel")
+        if log_ch_id:
+            log_ch = guild.get_channel(int(log_ch_id))
+            if log_ch:
+                e = discord.Embed(
+                    title=f"🤖 Résumé IA — Ticket #{ticket_data.get('number', '?')}",
+                    description=summary,
+                    color=discord.Color.blurple(),
+                    timestamp=datetime.utcnow()
+                )
+                e.add_field(name="Type", value=ticket_data.get('type', '?').capitalize())
+                e.add_field(name="Auteur", value=ticket_data.get('author_name', '?'))
+                e.set_footer(text="Résumé automatique par Kozakura AI")
+                await log_ch.send(embed=e)
+    except Exception:
+        pass  # Ignoré intentionnellement
+
+    except Exception:
+        pass  # Ignoré intentionnellement
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 📊 STATS & RAPPORTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Tracker de messages par membre {guild_id: {user_id: count}}
+message_count_db = load_json("message_counts.json", {})
+
+@bot.command(name="activite")
+@commands.has_permissions(kick_members=True)
+async def activite(ctx, member: discord.Member = None):
+    """!activite [@membre] — Stats détaillées d'un membre"""
+    member = member or ctx.author
+    gid = str(ctx.guild.id)
+    uid = str(member.id)
+
+    xp        = xp_db.get(gid, {}).get(uid, 0)
+    level     = get_level(xp)
+    sanctions = sanctions_db.get(gid, {}).get(uid, [])
+    warnings  = warnings_db.get(gid, {}).get(uid, [])
+    trophees  = trophees_db.get(gid, {}).get(uid, {})
+    msgs      = message_count_db.get(gid, {}).get(uid, 0)
+    voice_min = trophees.get("voice_minutes", 0)
+    votes     = trophees.get("votes", 0)
+
+    # Compter sanctions par type
+    sanc_counts = {}
+    for s in sanctions:
+        sanc_counts[s["type"]] = sanc_counts.get(s["type"], 0) + 1
+
+    # Statut vocal actuel
+    in_voice = member.voice.channel.name if member.voice else "Non"
+
+    # Ancienneté
+    joined = member.joined_at
+    days_on_server = (datetime.utcnow() - joined.replace(tzinfo=None)).days if joined else 0
+
+    e = discord.Embed(
+        title=f"📊 Activité de {member.display_name}",
+        color=discord.Color.blurple(),
+        timestamp=datetime.utcnow()
+    )
+    e.set_thumbnail(url=member.display_avatar.url)
+
+    e.add_field(
+        name="🏆 XP & Niveaux",
+        value=f"Niveau **{level}** • {xp} XP\nMessages estimés : ~{msgs}",
+        inline=True
+    )
+    e.add_field(
+        name="🎙️ Vocal",
+        value=f"Temps total : **{voice_min // 60}h {voice_min % 60}min**\nEn vocal : {in_voice}",
+        inline=True
+    )
+    e.add_field(
+        name="📅 Ancienneté",
+        value=f"Membre depuis **{days_on_server} jours**\n({joined.strftime('%d/%m/%Y') if joined else '?'})",
+        inline=True
+    )
+    e.add_field(
+        name="⚖️ Sanctions",
+        value="\n".join(f"• {k} : {v}" for k,v in sanc_counts.items()) or "✅ Aucune sanction",
+        inline=True
+    )
+    e.add_field(
+        name="⚠️ Avertissements",
+        value=f"**{len(warnings)}** warn(s)",
+        inline=True
+    )
+    e.add_field(
+        name="🏅 Trophées",
+        value=f"⭐ {votes} votes\n🎙️ {voice_min // 60}h vocal",
+        inline=True
+    )
+
+    # Rôles importants
+    roles = [r.mention for r in member.roles if r.name != "@everyone"][-5:]
+    if roles:
+        e.add_field(name="🎭 Rôles", value=" ".join(roles), inline=False)
+
+    e.set_footer(text=f"Kozakura Stats • {ctx.guild.name}")
+    await ctx.send(embed=e)
+
+# ── Rapport hebdomadaire automatique ─────────────────────────────────────────
+@tasks.loop(hours=1)
+async def rapport_hebdo():
+    """Envoie un rapport hebdomadaire chaque lundi à 9h UTC"""
+    now = datetime.utcnow()
+    if now.weekday() != 0 or now.hour != 9:  # Lundi = 0, 9h UTC
+        return
+
+    for guild in bot.guilds:
+        gid = str(guild.id)
+        staff_ch = discord.utils.find(
+            lambda c: "staff" in c.name.lower() or "logs-bans" in c.name.lower(),
+            guild.text_channels
+        )
+        if not staff_ch:
+            continue
+
+        # Stats de la semaine
+        sanctions_week = []
+        for uid, sancs in sanctions_db.get(gid, {}).items():
+            for s in sancs:
+                try:
+                    date = datetime.fromisoformat(s["date"][:19])
+                    if (now - date).days <= 7:
+                        sanctions_week.append(s)
+                except Exception: pass
+
+        # Top XP
+        top_xp = sorted(xp_db.get(gid, {}).items(), key=lambda x: -x[1])[:3]
+
+        # Membres actifs en vocal cette semaine
+        top_vocal = sorted(
+            trophees_db.get(gid, {}).items(),
+            key=lambda x: x[1].get("voice_minutes", 0), reverse=True
+        )[:3]
+
+        e = discord.Embed(
+            title=f"📊 Rapport Hebdomadaire — {guild.name}",
+            description=f"Semaine du **{(now - timedelta(days=7)).strftime('%d/%m')}** au **{now.strftime('%d/%m/%Y')}**",
+            color=discord.Color.gold(),
+            timestamp=now
+        )
+        if guild.icon:
+            e.set_thumbnail(url=guild.icon.url)
+
+        # Sanctions semaine
+        sanc_types = {}
+        for s in sanctions_week:
+            sanc_types[s["type"]] = sanc_types.get(s["type"], 0) + 1
+        sanc_txt = "\n".join(f"• {k} : {v}" for k,v in sanc_types.items()) or "✅ Aucune"
+        e.add_field(name=f"⚖️ Sanctions ({len(sanctions_week)})", value=sanc_txt, inline=True)
+
+        # Top XP
+        xp_lines = []
+        for uid, xp in top_xp:
+            m = guild.get_member(int(uid))
+            xp_lines.append(f"• {m.display_name if m else uid} — Niv.{get_level(xp)}")
+        e.add_field(name="🏆 Top XP", value="\n".join(xp_lines) or "Aucun", inline=True)
+
+        # Top vocal
+        voc_lines = []
+        for uid, d in top_vocal:
+            m = guild.get_member(int(uid))
+            h = d.get("voice_minutes", 0) // 60
+            voc_lines.append(f"• {m.display_name if m else uid} — {h}h")
+        e.add_field(name="🎙️ Top Vocal", value="\n".join(voc_lines) or "Aucun", inline=True)
+
+        # Stats générales
+        e.add_field(
+            name="📈 Stats Serveur",
+            value=(
+                f"👥 Membres : {guild.member_count}\n"
+                f"💎 Boosts : {guild.premium_subscription_count}\n"
+                f"🎫 Tickets ouverts : {sum(1 for t in tickets_db.get(gid,{}).values() if t.get('status')=='open')}"
+            ),
+            inline=False
+        )
+        e.set_footer(text="Rapport généré automatiquement chaque lundi • Kozakura")
+        await staff_ch.send(embed=e)
+
+# ── Commande rapport manuel ───────────────────────────────────────────────────
+@bot.command(name="rapport")
+@commands.has_permissions(administrator=True)
+async def rapport_manuel(ctx):
+    """!rapport — Génère le rapport hebdomadaire maintenant"""
+    gid = str(ctx.guild.id)
+    now = datetime.utcnow()
+
+    sanctions_week = []
+    for uid, sancs in sanctions_db.get(gid, {}).items():
+        for s in sancs:
+            try:
+                date = datetime.fromisoformat(s["date"][:19])
+                if (now - date).days <= 7:
+                    sanctions_week.append(s)
+            except Exception: pass
+
+    top_xp    = sorted(xp_db.get(gid, {}).items(), key=lambda x: -x[1])[:5]
+    top_vocal = sorted(trophees_db.get(gid, {}).items(), key=lambda x: x[1].get("voice_minutes",0), reverse=True)[:5]
+
+    e = discord.Embed(
+        title=f"📊 Rapport — {ctx.guild.name}",
+        description=f"Généré le **{now.strftime('%d/%m/%Y à %H:%M')}**",
+        color=discord.Color.gold(), timestamp=now
+    )
+    if ctx.guild.icon: e.set_thumbnail(url=ctx.guild.icon.url)
+
+    sanc_types = {}
+    for s in sanctions_week:
+        sanc_types[s["type"]] = sanc_types.get(s["type"], 0) + 1
+    e.add_field(name=f"⚖️ Sanctions 7j ({len(sanctions_week)})",
+        value="\n".join(f"• {k} : {v}" for k,v in sanc_types.items()) or "✅ Aucune", inline=True)
+
+    xp_lines = []
+    for uid, xp in top_xp:
+        m = ctx.guild.get_member(int(uid))
+        xp_lines.append(f"• {m.display_name if m else uid} — Niv.{get_level(xp)} ({xp} XP)")
+    e.add_field(name="🏆 Top XP", value="\n".join(xp_lines) or "Aucun", inline=False)
+
+    voc_lines = []
+    for uid, d in top_vocal:
+        m = ctx.guild.get_member(int(uid))
+        h = d.get("voice_minutes", 0) // 60
+        mn = d.get("voice_minutes", 0) % 60
+        voc_lines.append(f"• {m.display_name if m else uid} — {h}h {mn}min")
+    e.add_field(name="🎙️ Top Vocal", value="\n".join(voc_lines) or "Aucun", inline=False)
+
+    e.add_field(name="📈 Stats Serveur",
+        value=(f"👥 {ctx.guild.member_count} membres • 💎 {ctx.guild.premium_subscription_count} boosts\n"
+               f"🎫 Tickets ouverts : {sum(1 for t in tickets_db.get(gid,{}).values() if t.get('status')=='open')}"),
+        inline=False)
+    e.set_footer(text="Rapport Kozakura")
+    await ctx.send(embed=e)
+
+# ── Tracker messages ──────────────────────────────────────────────────────────
+# (incrémenté dans on_message via bot.listen)
+@bot.listen("on_message")
+async def track_message_count(message):
+    if message.author.bot or not message.guild: return
+    gid = str(message.guild.id)
+    uid = str(message.author.id)
+    message_count_db.setdefault(gid, {})
+    message_count_db[gid][uid] = message_count_db[gid].get(uid, 0) + 1
+    if message_count_db[gid][uid] % 50 == 0:  # Sauvegarder tous les 50 msgs
+        save_json("message_counts.json", message_count_db)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🤖 NOUVELLES COMMANDES IA
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.command(name="imagine")
+async def ai_imagine(ctx, *, description: str):
+    """!imagine [description] — Génère une description d'image détaillée avec l'IA"""
+    if not GROQ_API_KEY:
+        return await ctx.send("❌ L'IA n'est pas configurée.")
+
+    async with ctx.typing():
+        prompt = [{
+            "role": "user",
+            "content": (
+                f"Génère une description d'image très détaillée et visuelle pour : {description}\n\n"
+                f"Décris : les couleurs, l'ambiance, les éléments visuels, le style artistique, "
+                f"la composition, l'éclairage. Sois créatif et précis. Format : paragraphe descriptif "
+                f"suivi de mots-clés style 'prompt' séparés par des virgules."
+            )
+        }]
+        response = await call_groq(prompt)
+
+    e = discord.Embed(
+        title=f"🎨 Imagine — {description[:50]}",
+        description=response,
+        color=discord.Color.purple(),
+        timestamp=datetime.utcnow()
+    )
+    e.set_footer(text=f"Demandé par {ctx.author.display_name} • Kozakura AI")
+    await ctx.reply(embed=e)
+
+@bot.command(name="traduis")
+async def ai_traduis(ctx, langue: str = "anglais", *, texte: str):
+    """
+    !traduis [langue] [texte] — Traduit un texte
+    Exemples : !traduis anglais Bonjour tout le monde
+               !traduis espagnol Comment ça va ?
+    """
+    if not GROQ_API_KEY:
+        return await ctx.send("❌ L'IA n'est pas configurée.")
+
+    async with ctx.typing():
+        prompt = [{
+            "role": "user",
+            "content": f"Traduis ce texte en {langue}. Réponds UNIQUEMENT avec la traduction, sans explications :\n\n{texte}"
+        }]
+        response = await call_groq(prompt)
+
+    e = discord.Embed(color=discord.Color.blue(), timestamp=datetime.utcnow())
+    e.add_field(name="📝 Original", value=texte[:500], inline=False)
+    e.add_field(name=f"🌍 Traduction ({langue})", value=response[:500], inline=False)
+    e.set_footer(text=f"Traduit par Kozakura AI • {ctx.author.display_name}")
+    await ctx.reply(embed=e)
+
+@bot.command(name="moderia")
+@commands.has_permissions(kick_members=True)
+async def ai_moderation(ctx, member: discord.Member, *, raison: str = None):
+    """!moderia @membre [raison] — L'IA analyse et propose une sanction"""
+    if not GROQ_API_KEY:
+        return await ctx.send("❌ L'IA n'est pas configurée.")
+
+    gid = str(ctx.guild.id)
+    uid = str(member.id)
+    sanctions = sanctions_db.get(gid, {}).get(uid, [])
+    warnings  = warnings_db.get(gid, {}).get(uid, [])
+    xp        = xp_db.get(gid, {}).get(uid, 0)
+    days      = (datetime.utcnow() - member.joined_at.replace(tzinfo=None)).days if member.joined_at else 0
+
+    async with ctx.typing():
+        prompt = [{
+            "role": "user",
+            "content": (
+                f"Tu es un modérateur Discord expert. Analyse ce profil et propose une sanction appropriée.\n\n"
+                f"Membre : {member.display_name}\n"
+                f"Ancienneté : {days} jours\n"
+                f"Niveau XP : {get_level(xp)}\n"
+                f"Sanctions passées : {len(sanctions)} ({', '.join(set(s['type'] for s in sanctions)) if sanctions else 'aucune'})\n"
+                f"Avertissements : {len(warnings)}\n"
+                f"Raison actuelle : {raison or 'non précisée'}\n\n"
+                f"Propose : la sanction recommandée (warn/mute/kick/ban), la durée si applicable, "
+                f"et une justification courte. Sois juste et proportionnel."
+            )
+        }]
+        response = await call_groq(prompt)
+
+    e = discord.Embed(
+        title=f"🤖 Analyse IA — {member.display_name}",
+        description=response,
+        color=discord.Color.orange(),
+        timestamp=datetime.utcnow()
+    )
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.add_field(name="📋 Contexte", value=f"**{len(sanctions)}** sanctions • **{len(warnings)}** warns • {days}j ancienneté")
+    e.set_footer(text="⚠️ Suggestion IA — décision finale au staff")
+    await ctx.reply(embed=e)
+
+    e.add_field(name="📋 Contexte", value=f"**{len(sanctions)}** sanctions • **{len(warnings)}** warns • {days}j ancienneté")
+    e.set_footer(text="⚠️ Suggestion IA — décision finale au staff")
+    await ctx.reply(embed=e)
+
+# ─── LANCEMENT ────────────────────────────────────────────────────────────────
+import asyncio
+import sys
+
+import uuid
+from flask import Flask, request, jsonify
+from threading import Thread
+
+# ── CORS helper ───────────────────────────────────────────────────────────────
+def add_cors(response):
+    response.headers["Access-Control-Allow-Origin"]  = "*"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-API-Key"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    return response
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🌐 API DASHBOARD
+# ══════════════════════════════════════════════════════════════════════════════
+
+API_SECRET = os.getenv("DASHBOARD_SECRET", "")
+app_flask  = Flask(__name__)
+
+@app_flask.after_request
+def after_request(response):
+    return add_cors(response)
+
+@app_flask.route("/api/<path:path>", methods=["OPTIONS"])
+@app_flask.route("/api", methods=["OPTIONS"])
+def handle_options(*args, **kwargs):
+    from flask import Response
+    return add_cors(Response())
+
+def check_auth():
+    return request.headers.get("X-API-Key") == API_SECRET
+
+def api_error(msg, code=403):
+    return jsonify({"error": msg}), code
+
+def member_to_dict(m):
+    return {
+        "id":           str(m.id),
+        "name":         m.name,
+        "display_name": m.display_name,
+        "avatar":       str(m.display_avatar.url),
+        "roles":        [r.name for r in m.roles if r.name != "@everyone"],
+        "joined_at":    str(m.joined_at),
+        "bot":          m.bot
+    }
+
+# ── Auth ─────────────────────────────────────────────────────────────────────
+@app_flask.route("/api/auth", methods=["POST"])
+def api_auth():
+    key = request.json.get("key") if request.json else None
+    if key == API_SECRET:
+        return jsonify({"status": "ok", "token": API_SECRET})
+    return api_error("Clé invalide", 401)
+
+# ── Stats générales ───────────────────────────────────────────────────────────
+@app_flask.route("/api/stats")
+def api_stats():
+    if not check_auth(): return api_error("Non autorisé")
+    guilds = []
+    for guild in bot.guilds:
+        gid = str(guild.id)
+        guilds.append({
+            "id":          str(guild.id),
+            "name":        guild.name,
+            "icon":        str(guild.icon.url) if guild.icon else None,
+            "members":     guild.member_count,
+            "online":      sum(1 for m in guild.members if m.status != discord.Status.offline) if hasattr(list(guild.members)[0], 'status') else 0,
+            "boosts":      guild.premium_subscription_count,
+            "tickets":     len(tickets_db.get(gid, {})),
+            "sanctions":   sum(len(v) for v in sanctions_db.get(gid, {}).values()),
+            "giveaways":   sum(1 for g in giveaways_db.values() if not g.get("ended") and str(g["guild_id"]) == gid)
+        })
+    return jsonify({"guilds": guilds, "ping": round(bot.latency * 1000)})
+
+# ── Membres ───────────────────────────────────────────────────────────────────
+@app_flask.route("/api/<guild_id>/members")
+def api_members(guild_id):
+    if not check_auth(): return api_error("Non autorisé")
+    guild = bot.get_guild(int(guild_id))
+    if not guild: return api_error("Serveur introuvable", 404)
+    members = [member_to_dict(m) for m in guild.members if not m.bot]
+    return jsonify({"members": members, "total": len(members)})
+
+@app_flask.route("/api/<guild_id>/members/<member_id>")
+def api_member(guild_id, member_id):
+    if not check_auth(): return api_error("Non autorisé")
+    guild  = bot.get_guild(int(guild_id))
+    member = guild.get_member(int(member_id)) if guild else None
+    if not member: return api_error("Membre introuvable", 404)
+    gid = str(guild.id)
+    uid = str(member.id)
+    data = member_to_dict(member)
+    data["xp"]         = xp_db.get(gid, {}).get(uid, 0)
+    data["level"]      = get_level(data["xp"])
+    data["sanctions"]  = sanctions_db.get(gid, {}).get(uid, [])
+    data["trophees"]   = trophees_db.get(gid, {}).get(uid, {})
+    data["voice_ch"]   = member.voice.channel.name if member.voice else None
+    return jsonify(data)
+
+# ── Actions membres ───────────────────────────────────────────────────────────
+@app_flask.route("/api/<guild_id>/action", methods=["POST"])
+def api_action(guild_id):
+    if not check_auth(): return api_error("Non autorisé")
+    data      = request.json or {}
+    action    = data.get("action")
+    member_id = data.get("member_id")
+    reason    = data.get("reason", "Action depuis le dashboard")
+
+    guild  = bot.get_guild(int(guild_id))
+    if not guild: return api_error("Serveur introuvable", 404)
+    member = guild.get_member(int(member_id)) if member_id else None
+
+    async def do_action():
+        if action == "ban" and member:
+            await member.ban(reason=reason)
+        elif action == "kick" and member:
+            await member.kick(reason=reason)
+        elif action == "mute" and member:
+            duration = data.get("duration", 10)
+            until = discord.utils.utcnow() + timedelta(minutes=duration)
+            await member.timeout(until, reason=reason)
+        elif action == "unmute" and member:
+            await member.timeout(None)
+        elif action == "warn" and member:
+            await log_sanction(guild, member, "Warn", reason, guild.me)
+
+    asyncio.run_coroutine_threadsafe(do_action(), bot.loop)
+    return jsonify({"status": "ok", "action": action})
+
+# ── Sanctions ─────────────────────────────────────────────────────────────────
+@app_flask.route("/api/<guild_id>/sanctions")
+def api_sanctions(guild_id):
+    if not check_auth(): return api_error("Non autorisé")
+    guild = bot.get_guild(int(guild_id))
+    if not guild: return api_error("Serveur introuvable", 404)
+    gid   = str(guild.id)
+    result = []
+    for uid, sanctions in sanctions_db.get(gid, {}).items():
+        member = guild.get_member(int(uid))
+        result.append({
+            "member_id":   uid,
+            "member_name": member.display_name if member else f"ID:{uid}",
+            "avatar":      str(member.display_avatar.url) if member else None,
+            "sanctions":   sanctions
+        })
+    return jsonify({"sanctions": result})
+
+# ── Tickets ───────────────────────────────────────────────────────────────────
+@app_flask.route("/api/<guild_id>/tickets")
+def api_tickets(guild_id):
+    if not check_auth(): return api_error("Non autorisé")
+    guild = bot.get_guild(int(guild_id))
+    if not guild: return api_error("Serveur introuvable", 404)
+    gid   = str(guild.id)
+    result = []
+    for ch_id, tdata in tickets_db.get(gid, {}).items():
+        ch = guild.get_channel(int(ch_id))
+        opener = guild.get_member(tdata.get("opener_id", 0))
+        result.append({
+            "channel_id":   ch_id,
+            "channel_name": ch.name if ch else f"ticket-{ch_id}",
+            "type":         tdata.get("type", "inconnu"),
+            "opener":       opener.display_name if opener else "inconnu",
+            "opener_id":    str(tdata.get("opener_id", 0)),
+            "claimed_by":   str(tdata.get("claimed_by", "")),
+            "opened_at":    tdata.get("opened_at", "")
+        })
+    return jsonify({"tickets": result})
+
+@app_flask.route("/api/<guild_id>/tickets/<channel_id>/close", methods=["POST"])
+def api_close_ticket(guild_id, channel_id):
+    if not check_auth(): return api_error("Non autorisé")
+    guild = bot.get_guild(int(guild_id))
+    if not guild: return api_error("Serveur introuvable", 404)
+    ch = guild.get_channel(int(channel_id))
+    if not ch: return api_error("Salon introuvable", 404)
+
+    async def do_close():
+        await ch.delete(reason="Fermé depuis le dashboard")
+        gid = str(guild.id)
+        if channel_id in tickets_db.get(gid, {}):
+            del tickets_db[gid][channel_id]
+            save_json("tickets.json", tickets_db)
+
+    asyncio.run_coroutine_threadsafe(do_close(), bot.loop)
+    return jsonify({"status": "ok"})
+
+# ── XP / Niveaux ──────────────────────────────────────────────────────────────
+@app_flask.route("/api/<guild_id>/xp")
+def api_xp(guild_id):
+    if not check_auth(): return api_error("Non autorisé")
+    guild = bot.get_guild(int(guild_id))
+    if not guild: return api_error("Serveur introuvable", 404)
+    gid   = str(guild.id)
+    result = []
+    for uid, xp in sorted(xp_db.get(gid, {}).items(), key=lambda x: -x[1]):
+        member = guild.get_member(int(uid))
+        result.append({
+            "member_id":   uid,
+            "member_name": member.display_name if member else f"ID:{uid}",
+            "avatar":      str(member.display_avatar.url) if member else None,
+            "xp":          xp,
+            "level":       get_level(xp)
+        })
+    return jsonify({"leaderboard": result})
+
+@app_flask.route("/api/<guild_id>/xp/<member_id>", methods=["POST"])
+def api_set_xp(guild_id, member_id):
+    if not check_auth(): return api_error("Non autorisé")
+    xp_val = request.json.get("xp", 0) if request.json else 0
+    gid = str(guild_id)
+    xp_db.setdefault(gid, {})[str(member_id)] = int(xp_val)
+    save_json("xp.json", xp_db)
+    return jsonify({"status": "ok", "xp": xp_val})
+
+# ── Giveaways ─────────────────────────────────────────────────────────────────
+@app_flask.route("/api/<guild_id>/giveaways")
+def api_giveaways(guild_id):
+    if not check_auth(): return api_error("Non autorisé")
+    result = [
+        {**{k: str(v) if k in ["host_id","channel_id","guild_id"] else v for k,v in g.items()}, "id": str(mid)}
+        for mid, g in giveaways_db.items()
+        if str(g["guild_id"]) == str(guild_id)
+    ]
+    return jsonify({"giveaways": result})
+
+@app_flask.route("/api/<guild_id>/giveaways/create", methods=["POST"])
+def api_create_giveaway(guild_id):
+    if not check_auth(): return api_error("Non autorisé")
+    data    = request.json or {}
+    guild   = bot.get_guild(int(guild_id))
+    if not guild: return api_error("Serveur introuvable", 404)
+    ch_id   = data.get("channel_id")
+    channel = guild.get_channel(int(ch_id)) if ch_id else None
+    if not channel: return api_error("Salon introuvable", 404)
+
+    async def do_create():
+        seconds  = int(data.get("duration_seconds", 3600))
+        winners  = int(data.get("winners", 1))
+        prize    = data.get("prize", "Prix")
+        end_time = datetime.utcnow() + timedelta(seconds=seconds)
+        e = discord.Embed(
+            title=f"🎉 GIVEAWAY — {prize}",
+            description=(
+                f"Réagis avec 🎉 pour participer !\n\n"
+                f"🎁 **Prix :** {prize}\n"
+                f"🏆 **Gagnants :** {winners}\n"
+                f"⏰ **Fin dans :** {format_duration(seconds)}"
+            ),
+            color=discord.Color.blurple(), timestamp=end_time
+        )
+        e.set_footer(text="Créé depuis le Dashboard")
+        msg = await channel.send(embed=e)
+        await msg.add_reaction("🎉")
+        giveaways_db[msg.id] = {
+            "prize": prize, "winners": winners,
+            "host_id": guild.me.id, "channel_id": channel.id,
+            "guild_id": guild.id, "end_time": end_time.timestamp(),
+            "ended": False
+        }
+        asyncio.create_task(_giveaway_timer(msg.id, channel.id, guild.id, seconds))
+
+    asyncio.run_coroutine_threadsafe(do_create(), bot.loop)
+    return jsonify({"status": "ok"})
+
+# ── Trophées & Rangs ──────────────────────────────────────────────────────────
+@app_flask.route("/api/<guild_id>/trophees")
+def api_trophees(guild_id):
+    if not check_auth(): return api_error("Non autorisé")
+    guild = bot.get_guild(int(guild_id))
+    if not guild: return api_error("Serveur introuvable", 404)
+    gid   = str(guild.id)
+    result = []
+    for uid, tdata in trophees_db.get(gid, {}).items():
+        member = guild.get_member(int(uid))
+        result.append({
+            "member_id":     uid,
+            "member_name":   member.display_name if member else f"ID:{uid}",
+            "avatar":        str(member.display_avatar.url) if member else None,
+            "votes":         tdata.get("votes", 0),
+            "voice_minutes": tdata.get("voice_minutes", 0),
+            "voice_hours":   round(tdata.get("voice_minutes", 0) / 60, 1)
+        })
+    return jsonify({"trophees": sorted(result, key=lambda x: -x["votes"])})
+
+# ── Config ────────────────────────────────────────────────────────────────────
+@app_flask.route("/api/<guild_id>/config")
+def api_config(guild_id):
+    if not check_auth(): return api_error("Non autorisé")
+    cfg = config_db.get(str(guild_id), {})
+    return jsonify({"config": cfg})
+
+@app_flask.route("/api/<guild_id>/config", methods=["POST"])
+def api_set_config(guild_id):
+    if not check_auth(): return api_error("Non autorisé")
+    data = request.json or {}
+    gid  = str(guild_id)
+    config_db.setdefault(gid, {}).update(data)
+    save_json("config.json", config_db)
+    return jsonify({"status": "ok"})
+
+# ── Salons vocaux en direct ───────────────────────────────────────────────────
+@app_flask.route("/api/<guild_id>/voice")
+def api_voice(guild_id):
+    if not check_auth(): return api_error("Non autorisé")
+    guild = bot.get_guild(int(guild_id))
+    if not guild: return api_error("Serveur introuvable", 404)
+    channels = []
+    for vc in guild.voice_channels:
+        members = []
+        for m in vc.members:
+            members.append({
+                "id":     str(m.id),
+                "name":   m.display_name,
+                "avatar": str(m.display_avatar.url),
+                "muted":  m.voice.self_mute if m.voice else False,
+                "deafened": m.voice.self_deaf if m.voice else False
+            })
+        channels.append({
+            "id":      str(vc.id),
+            "name":    vc.name,
+            "members": members,
+            "limit":   vc.user_limit
+        })
+    return jsonify({"channels": channels})
+
+@app_flask.route("/api/<guild_id>/voice/move", methods=["POST"])
+def api_voice_move(guild_id):
+    if not check_auth(): return api_error("Non autorisé")
+    data      = request.json or {}
+    member_id = data.get("member_id")
+    channel_id = data.get("channel_id")
+    guild  = bot.get_guild(int(guild_id))
+    if not guild: return api_error("Serveur introuvable", 404)
+    member  = guild.get_member(int(member_id))
+    channel = guild.get_channel(int(channel_id))
+    if not member or not channel: return api_error("Membre ou salon introuvable", 404)
+    async def do_move():
+        await member.move_to(channel, reason="Déplacé depuis le dashboard")
+    asyncio.run_coroutine_threadsafe(do_move(), bot.loop)
+    return jsonify({"status": "ok"})
+
+@app_flask.route("/api/<guild_id>/voice/disconnect", methods=["POST"])
+def api_voice_disconnect(guild_id):
+    if not check_auth(): return api_error("Non autorisé")
+    member_id = (request.json or {}).get("member_id")
+    guild  = bot.get_guild(int(guild_id))
+    member = guild.get_member(int(member_id)) if guild else None
+    if not member: return api_error("Membre introuvable", 404)
+    async def do_dc():
+        await member.move_to(None, reason="Déconnecté depuis le dashboard")
+    asyncio.run_coroutine_threadsafe(do_dc(), bot.loop)
+    return jsonify({"status": "ok"})
+
+# ── Envoyer un message dans un salon ─────────────────────────────────────────
+@app_flask.route("/api/<guild_id>/send", methods=["POST"])
+def api_send_message(guild_id):
+    if not check_auth(): return api_error("Non autorisé")
+    data       = request.json or {}
+    channel_id = data.get("channel_id")
+    content    = data.get("content", "")
+    guild      = bot.get_guild(int(guild_id))
+    if not guild: return api_error("Serveur introuvable", 404)
+    channel = guild.get_channel(int(channel_id)) if channel_id else None
+    if not channel: return api_error("Salon introuvable", 404)
+    async def do_send():
+        if data.get("embed"):
+            e = discord.Embed(
+                title=data.get("embed_title", ""),
+                description=content,
+                color=discord.Color.from_str(data.get("color", "#FF2D78"))
+            )
+            await channel.send(embed=e)
+        else:
+            await channel.send(content)
+    asyncio.run_coroutine_threadsafe(do_send(), bot.loop)
+    return jsonify({"status": "ok"})
+
+# ── Liste des salons texte ────────────────────────────────────────────────────
+@app_flask.route("/api/<guild_id>/channels")
+def api_channels(guild_id):
+    if not check_auth(): return api_error("Non autorisé")
+    guild = bot.get_guild(int(guild_id))
+    if not guild: return api_error("Serveur introuvable", 404)
+    channels = [{"id": str(c.id), "name": c.name} for c in guild.text_channels]
+    return jsonify({"channels": channels})
+
+# ── Rôles ─────────────────────────────────────────────────────────────────────
+@app_flask.route("/api/<guild_id>/roles")
+def api_roles(guild_id):
+    if not check_auth(): return api_error("Non autorisé")
+    guild = bot.get_guild(int(guild_id))
+    if not guild: return api_error("Serveur introuvable", 404)
+    roles = [{"id": str(r.id), "name": r.name, "color": str(r.color), "members": len(r.members)}
+             for r in guild.roles if r.name != "@everyone"]
+    return jsonify({"roles": sorted(roles, key=lambda x: -x["members"])})
+
+@app_flask.route("/api/<guild_id>/roles/<role_id>/give", methods=["POST"])
+def api_give_role(guild_id, role_id):
+    if not check_auth(): return api_error("Non autorisé")
+    member_id = (request.json or {}).get("member_id")
+    guild  = bot.get_guild(int(guild_id))
+    member = guild.get_member(int(member_id)) if guild else None
+    role   = guild.get_role(int(role_id)) if guild else None
+    if not member or not role: return api_error("Introuvable", 404)
+    async def do_give():
+        await member.add_roles(role, reason="Ajouté depuis le dashboard")
+    asyncio.run_coroutine_threadsafe(do_give(), bot.loop)
+    return jsonify({"status": "ok"})
+
+@app_flask.route("/api/<guild_id>/roles/<role_id>/remove", methods=["POST"])
+def api_remove_role(guild_id, role_id):
+    if not check_auth(): return api_error("Non autorisé")
+    member_id = (request.json or {}).get("member_id")
+    guild  = bot.get_guild(int(guild_id))
+    member = guild.get_member(int(member_id)) if guild else None
+    role   = guild.get_role(int(role_id)) if guild else None
+    if not member or not role: return api_error("Introuvable", 404)
+    async def do_remove():
+        await member.remove_roles(role, reason="Retiré depuis le dashboard")
+    asyncio.run_coroutine_threadsafe(do_remove(), bot.loop)
+    return jsonify({"status": "ok"})
+
+    return jsonify({"status": "ok"})
+
+@app_flask.route("/api/<guild_id>/roles/<role_id>/delete", methods=["POST"])
+def api_delete_role(guild_id, role_id):
+    if not check_auth(): return api_error("Non autorisé")
+    guild = bot.get_guild(int(guild_id))
+    role  = guild.get_role(int(role_id)) if guild else None
+    if not role: return api_error("Rôle introuvable", 404)
+    async def do_delete():
+        await role.delete(reason="Supprimé depuis le dashboard")
+    asyncio.run_coroutine_threadsafe(do_delete(), bot.loop)
+    return jsonify({"status": "ok"})
+
+# ── Logs en temps réel ────────────────────────────────────────────────────────
+dashboard_logs = []  # Liste des derniers logs
+
+@bot.listen("on_message_delete")
+async def dashboard_log_delete(message):
+    if message.author.bot: return
+    dashboard_logs.append({"type":"delete","time":str(datetime.utcnow()),"content":f"Message supprimé de {message.author.display_name}: {message.content[:100]}","color":"red"})
+    if len(dashboard_logs) > 200: dashboard_logs.pop(0)
+
+@bot.listen("on_member_join")
+async def dashboard_log_join(member):
+    dashboard_logs.append({"type":"join","time":str(datetime.utcnow()),"content":f"{member.display_name} a rejoint le serveur","color":"green"})
+    if len(dashboard_logs) > 200: dashboard_logs.pop(0)
+
+@bot.listen("on_member_remove")
+async def dashboard_log_leave(member):
+    dashboard_logs.append({"type":"leave","time":str(datetime.utcnow()),"content":f"{member.display_name} a quitté le serveur","color":"yellow"})
+    if len(dashboard_logs) > 200: dashboard_logs.pop(0)
+
+@app_flask.route("/api/<guild_id>/logs")
+def api_logs(_guild_id):
+    """Retourne les logs temps réel (guild_id non utilisé — logs globaux)"""
+    if not check_auth(): return api_error("Non autorisé")
+    return jsonify({"logs": list(reversed(dashboard_logs[-50:]))})
+
+# ── Rangs ─────────────────────────────────────────────────────────────────────
+@app_flask.route("/api/<guild_id>/ranks")
+def api_ranks(guild_id):
+    if not check_auth(): return api_error("Non autorisé")
+    guild = bot.get_guild(int(guild_id))
+    if not guild: return api_error("Serveur introuvable", 404)
+    RANK_ROLES_LIST = [
+        ("***", "Mirai"), ("**", "Taiyō"), ("*", "Hoshi"),
+        ("III", "Shin"), ("II", "Tsuki"), ("I", "Kage")
+    ]
+    result = []
+    for grade, titre in RANK_ROLES_LIST:
+        role_grade = discord.utils.get(guild.roles, name=grade)
+        members_with_rank = [member_to_dict(m) for m in guild.members if role_grade and role_grade in m.roles]
+        result.append({"grade": grade, "titre": titre, "members": members_with_rank})
+    return jsonify({"ranks": result})
+
+@app_flask.route("/api/<guild_id>/ranks/set", methods=["POST"])
+def api_set_rank(guild_id):
+    if not check_auth(): return api_error("Non autorisé")
+    data      = request.json or {}
+    member_id = data.get("member_id")
+    rank_idx  = data.get("rank_index", 0)  # 0=***, 5=I
+    guild     = bot.get_guild(int(guild_id))
+    member    = guild.get_member(int(member_id)) if guild else None
+    if not member: return api_error("Membre introuvable", 404)
+    RANK_ROLES_PAIRS = [("***","Mirai"),("**","Taiyō"),("*","Hoshi"),("III","Shin"),("II","Tsuki"),("I","Kage")]
+    async def do_rank():
+        # Retirer tous les anciens rangs
+        for g, t in RANK_ROLES_PAIRS:
+            rg = discord.utils.get(guild.roles, name=g)
+            rt = discord.utils.get(guild.roles, name=t)
+            if rg and rg in member.roles: await member.remove_roles(rg)
+            if rt and rt in member.roles: await member.remove_roles(rt)
+        # Donner le nouveau rang
+        g, t = RANK_ROLES_PAIRS[rank_idx]
+        rg = discord.utils.get(guild.roles, name=g)
+        rt = discord.utils.get(guild.roles, name=t)
+        if rg: await member.add_roles(rg)
+        if rt: await member.add_roles(rt)
+    asyncio.run_coroutine_threadsafe(do_rank(), bot.loop)
+    return jsonify({"status": "ok"})
+
+
+# ── Lancement Flask dans un thread ────────────────────────────────────────────
+def run_flask():
+    app_flask.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+
+async def main():
+    # Lancer l'API Flask dans un thread séparé
+    flask_thread = Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    async with bot:
+        await bot.start(TOKEN)
+
+if __name__ == "__main__":
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
