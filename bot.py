@@ -232,6 +232,7 @@ async def nuke_action(guild, member, action_type: str):
 ROLE_GESTION_STAFF  = "Gestion"
 ROLE_GESTION_ABUS   = "Support"
 ROLE_COD            = "B#tch"                # Peut tout voir
+ROLE_COD_ID         = 1478530602037674148    # ID Discord du rôle B#tch
 ROLE_PARTENARIAT    = "Partenariat"           # Visible uniquement par B#tch
 ROLE_JUGE           = "Gestion"              # Rôle requis pour le tribunal
 
@@ -1502,7 +1503,7 @@ def get_ticket_overwrites(guild, author, ticket_type: str):
     - C.O.D voit TOUT
     - Partenariat : visible uniquement par C.O.D (pas de rôle Partenariat)
     """
-    cod_role = discord.utils.get(guild.roles, name=ROLE_COD)
+    cod_role = guild.get_role(ROLE_COD_ID)
 
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(read_messages=False),
