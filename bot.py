@@ -2240,6 +2240,29 @@ async def help(ctx, categorie: str = None):
             e.add_field(name="🔒 !lockdown [raison]", value="Verrouille tous les salons immédiatement", inline=False)
             e.add_field(name="🔓 !unlockdown", value="Lève le lockdown", inline=False)
             e.add_field(name="🧊 !freeze @membre", value="Coupe toutes les permissions sans bannir", inline=False)
+
+        elif cat in ("economie", "économie", "eco"):
+            e.title = "🌸 Économie — Sakuras"
+            e.description = "Gagne, dépense et échange des 🌸 Sakuras !"
+            e.add_field(name="!daily",                    value="Récompense quotidienne (100-500 🌸, cooldown 24h)", inline=False)
+            e.add_field(name="!work",                     value="Travailler toutes les 2h (50-200 🌸)", inline=False)
+            e.add_field(name="!balance [@membre]",        value="Voir son solde de Sakuras", inline=False)
+            e.add_field(name="!give @membre [montant]",   value="Donner des Sakuras à quelqu'un", inline=False)
+            e.add_field(name="!topmoney",                 value="Classement des membres les plus riches", inline=False)
+            e.add_field(name="!setbirthday [JJ/MM]",      value="Enregistrer son anniversaire (+500 🌸 le jour J)", inline=False)
+            e.add_field(name="⚙️ Admin",
+                value="`!addmoney @m [n]` — Ajouter des Sakuras\n`!removemoney @m [n]` — Retirer des Sakuras",
+                inline=False)
+
+        elif cat == "fun":
+            e.title = "🎲 Commandes Fun"
+            e.description = "Détends-toi avec les commandes fun de Kozakura 🌸"
+            e.add_field(name="!8ball [question]",       value="La boule magique répond à ta question 🔮", inline=False)
+            e.add_field(name="!coinflip",               value="Pile ou face animé 🪙", inline=False)
+            e.add_field(name="!dé [faces]",             value="Lancer un dé (défaut 6 faces) 🎲", inline=False)
+            e.add_field(name="!ship @u1 @u2",           value="Compatibilité amoureuse entre deux membres 💘", inline=False)
+            e.add_field(name="!compliment [@membre]",   value="Envoyer un compliment stylé 🌸", inline=False)
+            e.add_field(name="!insulte [@membre]",      value="Insulte légère et drôle 😤", inline=False)
             e.add_field(name="🔥 !unfreeze @membre", value="Restaure les permissions d'un membre gelé", inline=False)
             e.add_field(name="🍯 !sethoneypot [#salon]", value="Crée un salon piège — alerte + ban auto si quelqu'un écrit dedans", inline=False)
             e.add_field(name="🔍 !whois @membre", value="Enquête complète : historique, risques, sanctions, rôles", inline=False)
@@ -2284,6 +2307,8 @@ async def help(ctx, categorie: str = None):
     e.add_field(name="🤖 `!help ia`",          value="IA, imagine, traduis, moderation IA...", inline=True)
     e.add_field(name="📊 `!help stats`",       value="Activité membre, rapport hebdo...", inline=True)
     e.add_field(name="🔒 `!help securite`",    value="Lockdown, freeze, honeypot, whois, backup...", inline=True)
+    e.add_field(name="🌸 `!help economie`",    value="Sakuras, daily, work, balance, topmoney...", inline=True)
+    e.add_field(name="🎲 `!help fun`",         value="8ball, coinflip, dé, ship, compliment...", inline=True)
 
     e.set_footer(text=f"Kozakura Bot • {ctx.guild.name}")
     await ctx.send(embed=e)
@@ -5710,6 +5735,473 @@ async def main():
     flask_thread.start()
     async with bot:
         await bot.start(TOKEN)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🌸 SYSTÈME D'ÉCONOMIE — SAKURA
+# ══════════════════════════════════════════════════════════════════════════════
+
+economy_db   = load_json("economy.json", {})
+birthday_db  = load_json("birthdays.json", {})
+weekly_xp_db = load_json("weekly_xp.json", {})
+
+KOZA_PINK  = 0xFF2D78
+KOZA_DARK  = 0x080810
+
+def get_balance(guild_id: str, user_id: str) -> int:
+    return economy_db.get(guild_id, {}).get(user_id, 0)
+
+def add_balance(guild_id: str, user_id: str, amount: int):
+    economy_db.setdefault(guild_id, {})[user_id] = get_balance(guild_id, user_id) + amount
+    save_json("economy.json", economy_db)
+
+def set_balance(guild_id: str, user_id: str, amount: int):
+    economy_db.setdefault(guild_id, {})[user_id] = max(0, amount)
+    save_json("economy.json", economy_db)
+
+def koza_embed(title: str, description: str = "", color: int = KOZA_PINK) -> discord.Embed:
+    return discord.Embed(title=title, description=description, color=color,
+                         timestamp=datetime.utcnow())
+
+@bot.command()
+async def daily(ctx):
+    """!daily — Récompense quotidienne (100-500 🌸, cooldown 24h)"""
+    import random
+    gid = str(ctx.guild.id); uid = str(ctx.author.id)
+    key = f"daily_{uid}_{gid}"
+    last = config_db.get(key, 0)
+    now  = time.time()
+    remaining = 86400 - (now - last)
+    if remaining > 0:
+        h, m = divmod(int(remaining), 3600); m //= 60
+        e = koza_embed("🌸 Daily indisponible",
+            f"{ctx.author.mention}, ton daily sera disponible dans **{h}h {m}min** ⏳", KOZA_DARK)
+        e.set_footer(text=f"Kozakura • {ctx.guild.name}")
+        return await ctx.send(embed=e)
+    gain = random.randint(100, 500)
+    add_balance(gid, uid, gain)
+    config_db[key] = now
+    save_json("config.json", config_db)
+    e = koza_embed("🌸 Daily récupéré !",
+        f"{ctx.author.mention} a reçu **{gain} 🌸 Sakuras** !\n\n"
+        f"💰 Solde : **{get_balance(gid, uid):,} 🌸**")
+    e.set_thumbnail(url=ctx.author.display_avatar.url)
+    e.set_footer(text=f"Kozakura • {ctx.guild.name}")
+    await ctx.send(embed=e)
+
+WORK_MESSAGES = [
+    "Tu as livré des ramens à domicile 🍜",
+    "Tu as gardé des chats de ninja 🐱‍👤",
+    "Tu as réparé le katana d'un samouraï 🗡️",
+    "Tu as vendu des fleurs de cerisier au marché 🌸",
+    "Tu as joué de la flûte dans la rue ⛩️",
+    "Tu as trié des étoiles de shuriken rouillées ⭐",
+    "Tu as servi du thé dans un ryokan 🍵",
+    "Tu as nettoyé un temple la nuit 🏮",
+    "Tu as dompté un renard kitsune 🦊",
+    "Tu as préparé des onigiri pour le staff 🍙",
+    "Tu as couru après un tanuki voleur 🦝",
+    "Tu as traduit des parchemins anciens 📜",
+]
+
+@bot.command()
+async def work(ctx):
+    """!work — Travailler toutes les 2h (50-200 🌸)"""
+    import random
+    gid = str(ctx.guild.id); uid = str(ctx.author.id)
+    key = f"work_{uid}_{gid}"
+    last = config_db.get(key, 0)
+    now  = time.time()
+    remaining = 7200 - (now - last)
+    if remaining > 0:
+        m, s = divmod(int(remaining), 60); m, h = m % 60, m // 60
+        suffix = f"**{h}h {m}min**" if h else f"**{m}min {s}s**"
+        e = koza_embed("⏳ Tu es encore fatigué·e",
+            f"{ctx.author.mention}, repose-toi encore {suffix} avant de retravailler !", KOZA_DARK)
+        e.set_footer(text=f"Kozakura • {ctx.guild.name}")
+        return await ctx.send(embed=e)
+    gain = random.randint(50, 200)
+    msg  = random.choice(WORK_MESSAGES)
+    add_balance(gid, uid, gain)
+    config_db[key] = now
+    save_json("config.json", config_db)
+    e = koza_embed("💼 Travail accompli !",
+        f"✨ *{msg}*\n\n"
+        f"{ctx.author.mention} a gagné **{gain} 🌸 Sakuras** !\n"
+        f"💰 Solde : **{get_balance(gid, uid):,} 🌸**")
+    e.set_thumbnail(url=ctx.author.display_avatar.url)
+    e.set_footer(text=f"Kozakura • {ctx.guild.name}")
+    await ctx.send(embed=e)
+
+@bot.command()
+async def balance(ctx, member: discord.Member = None):
+    """!balance [@membre] — Voir son solde"""
+    member = member or ctx.author
+    gid = str(ctx.guild.id); uid = str(member.id)
+    bal = get_balance(gid, uid)
+    # Rang richesse
+    sorted_eco = sorted(economy_db.get(gid, {}).items(), key=lambda x: x[1], reverse=True)
+    rank_pos = next((i + 1 for i, (u, _) in enumerate(sorted_eco) if u == uid), len(sorted_eco))
+    e = koza_embed("💰 Portefeuille Sakura 🌸",
+        f"**{member.display_name}** possède :")
+    e.add_field(name="🌸 Sakuras", value=f"**{bal:,}** 🌸", inline=True)
+    e.add_field(name="🏆 Rang richesse", value=f"**#{rank_pos}** / {len(sorted_eco)}", inline=True)
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.set_footer(text=f"Kozakura • {ctx.guild.name}")
+    await ctx.send(embed=e)
+
+@bot.command()
+async def give(ctx, member: discord.Member, amount: int):
+    """!give @membre [montant] — Donner des sakuras"""
+    if amount <= 0:
+        return await ctx.send("❌ Le montant doit être positif.", delete_after=5)
+    gid = str(ctx.guild.id)
+    uid_from = str(ctx.author.id); uid_to = str(member.id)
+    if get_balance(gid, uid_from) < amount:
+        e = koza_embed("❌ Fonds insuffisants",
+            f"Tu n'as que **{get_balance(gid, uid_from):,} 🌸** — il t'en faut **{amount:,}**.", KOZA_DARK)
+        e.set_footer(text=f"Kozakura • {ctx.guild.name}")
+        return await ctx.send(embed=e)
+    add_balance(gid, uid_from, -amount)
+    add_balance(gid, uid_to,    amount)
+    e = koza_embed("🌸 Transfert effectué !",
+        f"{ctx.author.mention} a offert **{amount:,} 🌸** à {member.mention} 💝\n\n"
+        f"💰 Ton nouveau solde : **{get_balance(gid, uid_from):,} 🌸**")
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.set_footer(text=f"Kozakura • {ctx.guild.name}")
+    await ctx.send(embed=e)
+
+@bot.command()
+async def topmoney(ctx):
+    """!topmoney — Classement des plus riches"""
+    gid = str(ctx.guild.id)
+    top = sorted(economy_db.get(gid, {}).items(), key=lambda x: x[1], reverse=True)[:10]
+    if not top:
+        return await ctx.send("Aucune donnée économique pour ce serveur.")
+    medals = ["🥇", "🥈", "🥉"] + ["🏅"] * 7
+    lines = []
+    for i, (uid, bal) in enumerate(top):
+        m = ctx.guild.get_member(int(uid))
+        name = m.display_name if m else f"ID:{uid}"
+        lines.append(f"{medals[i]} **{name}** — {bal:,} 🌸")
+    e = koza_embed("🌸 Classement des plus riches", "\n".join(lines))
+    if ctx.guild.icon:
+        e.set_thumbnail(url=ctx.guild.icon.url)
+    e.set_footer(text=f"Kozakura • {ctx.guild.name}")
+    await ctx.send(embed=e)
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def addmoney(ctx, member: discord.Member, amount: int):
+    """!addmoney @membre [montant] — Admin : ajouter des sakuras"""
+    gid = str(ctx.guild.id); uid = str(member.id)
+    add_balance(gid, uid, amount)
+    e = koza_embed("✅ Sakuras ajoutés",
+        f"**+{amount:,} 🌸** ajoutés à {member.mention}\n"
+        f"Nouveau solde : **{get_balance(gid, uid):,} 🌸**")
+    e.set_footer(text=f"Kozakura • {ctx.guild.name}")
+    await ctx.send(embed=e)
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def removemoney(ctx, member: discord.Member, amount: int):
+    """!removemoney @membre [montant] — Admin : retirer des sakuras"""
+    gid = str(ctx.guild.id); uid = str(member.id)
+    bal = get_balance(gid, uid)
+    set_balance(gid, uid, bal - amount)
+    e = koza_embed("✅ Sakuras retirés",
+        f"**-{amount:,} 🌸** retirés à {member.mention}\n"
+        f"Nouveau solde : **{get_balance(gid, uid):,} 🌸**", KOZA_DARK)
+    e.set_footer(text=f"Kozakura • {ctx.guild.name}")
+    await ctx.send(embed=e)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🎂 ANNIVERSAIRES
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.command()
+async def setbirthday(ctx, date: str):
+    """!setbirthday [JJ/MM] — Enregistrer son anniversaire"""
+    try:
+        parts = date.split("/")
+        if len(parts) != 2: raise ValueError
+        day, month = int(parts[0]), int(parts[1])
+        if not (1 <= day <= 31 and 1 <= month <= 12): raise ValueError
+        datetime(2000, month, day)  # valide la date
+    except (ValueError, IndexError):
+        return await ctx.send("❌ Format invalide. Utilise `!setbirthday JJ/MM` (ex: `!setbirthday 14/03`)", delete_after=8)
+    gid = str(ctx.guild.id); uid = str(ctx.author.id)
+    birthday_db.setdefault(gid, {})[uid] = f"{day:02d}/{month:02d}"
+    save_json("birthdays.json", birthday_db)
+    e = koza_embed("🎂 Anniversaire enregistré !",
+        f"🎉 {ctx.author.mention}, ton anniversaire est le **{day:02d}/{month:02d}** 🌸\n"
+        f"Tu recevras **500 🌸 Sakuras** ce jour-là !")
+    e.set_thumbnail(url=ctx.author.display_avatar.url)
+    e.set_footer(text=f"Kozakura • {ctx.guild.name}")
+    await ctx.send(embed=e)
+
+async def announce_birthdays():
+    """Annonce les anniversaires du jour dans tous les serveurs"""
+    import random
+    today = datetime.utcnow()
+    date_str = f"{today.day:02d}/{today.month:02d}"
+    confettis = ["🎊", "🎉", "🌸", "✨", "🎋", "💮", "🎀", "🏮"]
+    for guild in bot.guilds:
+        gid = str(guild.id)
+        members_today = [uid for uid, d in birthday_db.get(gid, {}).items() if d == date_str]
+        if not members_today:
+            continue
+        ch = discord.utils.find(
+            lambda c: "général" in c.name.lower() or "general" in c.name.lower(),
+            guild.text_channels
+        )
+        if not ch:
+            continue
+        for uid in members_today:
+            member = guild.get_member(int(uid))
+            if not member:
+                continue
+            add_balance(gid, uid, 500)
+            banner = " ".join(random.choices(confettis, k=8))
+            e = discord.Embed(
+                title=f"🎂 Joyeux Anniversaire, {member.display_name} ! 🎂",
+                description=(
+                    f"{banner}\n\n"
+                    f"✨ Toute l'équipe de **{guild.name}** te souhaite un merveilleux anniversaire {member.mention} ! 🌸\n\n"
+                    f"🎁 Cadeau spécial : **+500 🌸 Sakuras** offerts !\n\n"
+                    f"{banner}"
+                ),
+                color=KOZA_PINK,
+                timestamp=datetime.utcnow()
+            )
+            e.set_thumbnail(url=member.display_avatar.url)
+            if guild.icon:
+                e.set_image(url=guild.icon.url)
+            e.set_footer(text=f"Kozakura • {guild.name}")
+            await ch.send(embed=e)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🏆 CLASSEMENT HEBDOMADAIRE XP
+# ══════════════════════════════════════════════════════════════════════════════
+
+TOP_ROLE_NAMES = ["🥇 Top 1", "🥈 Top 2", "🥉 Top 3"]
+
+async def weekly_reset():
+    """Reset hebdo : annonce top 3, attribue rôles temporaires, remet à zéro"""
+    for guild in bot.guilds:
+        gid = str(guild.id)
+        week_data = weekly_xp_db.get(gid, {})
+        if not week_data:
+            continue
+        top3 = sorted(week_data.items(), key=lambda x: x[1], reverse=True)[:3]
+
+        # Retirer les anciens rôles top
+        for rname in TOP_ROLE_NAMES:
+            role = discord.utils.get(guild.roles, name=rname)
+            if role:
+                for m in list(role.members):
+                    try: await m.remove_roles(role, reason="Reset hebdo XP")
+                    except Exception: pass
+
+        # Attribuer les nouveaux rôles + embed annonce
+        ch = discord.utils.find(
+            lambda c: "niveau" in c.name.lower() or "level" in c.name.lower() or "xp" in c.name.lower(),
+            guild.text_channels
+        )
+        podium_lines = []
+        for i, (uid, xp) in enumerate(top3):
+            member = guild.get_member(int(uid))
+            if not member: continue
+            rname = TOP_ROLE_NAMES[i]
+            role  = discord.utils.get(guild.roles, name=rname)
+            if role:
+                try: await member.add_roles(role, reason="Top hebdo XP")
+                except Exception: pass
+            medals = ["🥇", "🥈", "🥉"]
+            podium_lines.append(f"{medals[i]} {member.mention} — **{xp:,} XP**")
+
+        if ch and podium_lines:
+            e = discord.Embed(
+                title="🏆 Classement Hebdomadaire — Résultats !",
+                description=(
+                    "✨ La semaine est terminée ! Voici le top 3 XP 🌸\n\n"
+                    + "\n".join(podium_lines) +
+                    "\n\n🎖️ Les rôles **Top 1 / 2 / 3** ont été attribués pour cette semaine !"
+                ),
+                color=KOZA_PINK,
+                timestamp=datetime.utcnow()
+            )
+            if guild.icon:
+                e.set_thumbnail(url=guild.icon.url)
+            e.set_footer(text=f"Kozakura • {guild.name}")
+            await ch.send(embed=e)
+
+        # Reset
+        weekly_xp_db[gid] = {}
+    save_json("weekly_xp.json", weekly_xp_db)
+
+
+# ── Tâche planifiée : anniversaires 8h UTC + reset hebdo lundi ───────────────
+@tasks.loop(minutes=1)
+async def daily_tasks():
+    now = datetime.utcnow()
+    # Anniversaires à 8h00 UTC
+    if now.hour == 8 and now.minute == 0:
+        await announce_birthdays()
+    # Reset hebdo lundi à 8h05 UTC
+    if now.weekday() == 0 and now.hour == 8 and now.minute == 5:
+        await weekly_reset()
+
+# Démarrer la tâche dans on_ready (ajout via bot.listen)
+@bot.listen("on_ready")
+async def start_daily_tasks():
+    if not daily_tasks.is_running():
+        daily_tasks.start()
+
+# Accumuler XP hebdomadaire à chaque message XP gagné
+@bot.listen("on_message")
+async def track_weekly_xp(message):
+    if message.author.bot or not message.guild: return
+    gid = str(message.guild.id); uid = str(message.author.id)
+    weekly_xp_db.setdefault(gid, {})
+    weekly_xp_db[gid][uid] = weekly_xp_db[gid].get(uid, 0) + XP_PER_MSG
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🎲 COMMANDES FUN
+# ══════════════════════════════════════════════════════════════════════════════
+
+EIGHTBALL_RESPONSES = [
+    ("🟢", "Absolument, c'est certain ! ✨"),
+    ("🟢", "Les esprits du cerisier disent OUI 🌸"),
+    ("🟢", "Sans aucun doute, va-y ! ⛩️"),
+    ("🟢", "Les étoiles s'alignent en ta faveur 🌙"),
+    ("🟢", "Le karma est de ton côté 🎋"),
+    ("🟡", "Peut-être... les fleurs ne sont pas encore écloses 🌸"),
+    ("🟡", "Le vent souffle dans les deux sens 🍃"),
+    ("🟡", "Le tanuki ne se prononce pas 🦝"),
+    ("🟡", "Interroge à nouveau sous la lune 🌙"),
+    ("🟡", "La réponse est floue comme la brume du mont Fuji 🗻"),
+    ("🔴", "Les esprits murmurent NON ⛩️"),
+    ("🔴", "Le samouraï secoue la tête 🗡️"),
+    ("🔴", "Les sakuras tombent — mauvais présage 🌸"),
+    ("🔴", "Absolument pas, change de plan ! 💮"),
+    ("🔴", "Le destin en a décidé autrement 🌑"),
+    ("🟡", "Reviens me voir après avoir médité 🧘"),
+    ("🟢", "Fonce, le dragon approuve 🐉"),
+    ("🔴", "Même le kitsune rit de cette idée 🦊"),
+    ("🟢", "Le temple a parlé : c'est un oui ! 🏮"),
+    ("🔴", "Aucune chance, même avec un sortilège 🌀"),
+]
+
+@bot.command(name="8ball")
+async def eightball(ctx, *, question: str):
+    """!8ball [question] — La boule magique répond"""
+    import random
+    color_icon, response = random.choice(EIGHTBALL_RESPONSES)
+    e = koza_embed(f"🔮 Boule Magique Kozakura",
+        f"**Question :** {question}\n\n"
+        f"{color_icon} **Réponse :** {response}")
+    e.set_thumbnail(url=ctx.author.display_avatar.url)
+    e.set_footer(text=f"Kozakura • {ctx.guild.name}")
+    await ctx.send(embed=e)
+
+@bot.command()
+async def coinflip(ctx):
+    """!coinflip — Pile ou face"""
+    import random
+    result = random.choice([("🌸 Face", "La fleur de cerisier est visible !"), ("⚔️ Pile", "La lame du samouraï est en haut !")])
+    e = koza_embed("🪙 Pile ou Face", f"La pièce tourne... et c'est...\n\n# {result[0]}\n*{result[1]}*")
+    e.set_footer(text=f"Kozakura • {ctx.guild.name}")
+    await ctx.send(embed=e)
+
+@bot.command(name="dé")
+async def de(ctx, faces: int = 6):
+    """!dé [faces] — Lancer un dé"""
+    import random
+    if faces < 2 or faces > 1000:
+        return await ctx.send("❌ Le dé doit avoir entre 2 et 1000 faces.", delete_after=5)
+    result = random.randint(1, faces)
+    e = koza_embed(f"🎲 Dé à {faces} faces",
+        f"{ctx.author.mention} lance le dé...\n\n"
+        f"✨ Résultat : **{result}** / {faces}")
+    e.set_thumbnail(url=ctx.author.display_avatar.url)
+    e.set_footer(text=f"Kozakura • {ctx.guild.name}")
+    await ctx.send(embed=e)
+
+@bot.command()
+async def ship(ctx, user1: discord.Member, user2: discord.Member):
+    """!ship @u1 @u2 — Compatibilité amoureuse"""
+    import random, hashlib
+    seed = int(hashlib.md5(f"{min(user1.id, user2.id)}{max(user1.id, user2.id)}".encode()).hexdigest(), 16)
+    rng  = random.Random(seed)
+    score = rng.randint(0, 100)
+    bar_fill = score // 10
+    bar = "💗" * bar_fill + "🖤" * (10 - bar_fill)
+    if score >= 90:   verdict = "💞 Âmes sœurs — c'est le destin ! ⛩️"
+    elif score >= 70: verdict = "💕 Très bonne compatibilité 🌸"
+    elif score >= 50: verdict = "💛 Amitié possible, qui sait ? 🎋"
+    elif score >= 30: verdict = "🌀 Ça va être compliqué..."
+    else:             verdict = "💔 Les esprits déconseillent fortement 🗡️"
+    e = koza_embed("💘 Kozakura Ship !")
+    e.add_field(name="💑 Le couple", value=f"{user1.mention} ❤️ {user2.mention}", inline=False)
+    e.add_field(name="📊 Compatibilité", value=f"{bar} **{score}%**", inline=False)
+    e.add_field(name="✨ Verdict", value=verdict, inline=False)
+    e.set_thumbnail(url=user1.display_avatar.url)
+    e.set_footer(text=f"Kozakura • {ctx.guild.name}")
+    await ctx.send(embed=e)
+
+COMPLIMENTS = [
+    "est une lumière dans ce serveur 🌸",
+    "a le sourire le plus radieux de tout le Japon ✨",
+    "est aussi précieux·se qu'une fleur de cerisier rare 🌸",
+    "illumine chaque conversation comme la lune 🌙",
+    "est la raison pour laquelle ce serveur est génial 💮",
+    "a le charisme d'un shogun et la douceur d'un pétale 🌸",
+    "est absolument irremplaçable dans cette communauté ⛩️",
+    "mérite tous les sakuras du monde 🌸✨",
+    "est une âme rare, comme un cerisier en hiver 🎋",
+    "rayonne comme un feu de temple dans la nuit 🏮",
+]
+
+INSULTES = [
+    "a probablement oublié de manger ses ramens ce matin 🍜",
+    "confond encore les baguettes avec des stylos 🥢",
+    "a un chat kitsune plus intelligent que lui/elle 🦊",
+    "ferait peur même aux fantômes de Kyoto 👻",
+    "arrive toujours en retard comme un samouraï sans monture 🗡️",
+    "a le sens de l'orientation d'un tanuki ivre 🦝",
+    "mérite un award du membre le plus étrange du serveur 🏆",
+    "a des mèmes aussi vieux que le mont Fuji 🗻",
+    "dort probablement en plein milieu d'une conversation 😴",
+    "parle de tout mais ne sait rien, comme l'oracle du village 🏮",
+]
+
+@bot.command()
+async def compliment(ctx, member: discord.Member = None):
+    """!compliment [@membre] — Envoyer un compliment stylé"""
+    import random
+    member = member or ctx.author
+    msg = random.choice(COMPLIMENTS)
+    e = koza_embed("🌸 Compliment Kozakura",
+        f"✨ {member.mention} {msg}")
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.set_footer(text=f"Kozakura • {ctx.guild.name}")
+    await ctx.send(embed=e)
+
+@bot.command()
+async def insulte(ctx, member: discord.Member = None):
+    """!insulte [@membre] — Insulte légère et drôle"""
+    import random
+    member = member or ctx.author
+    msg = random.choice(INSULTES)
+    e = koza_embed("😤 Kozakura dit...",
+        f"🗡️ {member.mention} {msg}", KOZA_DARK)
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.set_footer(text=f"Kozakura • {ctx.guild.name} • (c'est pour rire !)")
+    await ctx.send(embed=e)
+
 
 if __name__ == "__main__":
     if sys.platform == "win32":
