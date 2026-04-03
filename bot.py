@@ -126,6 +126,7 @@ nsfw_words_db  = load_json("nsfw_words.json", {"words": []})
 user_prefs_db  = load_json("user_prefs.json", {})   # pseudo préféré IA
 banned_db      = load_json("banned_members.json", {})  # historique bannis
 autotrad_db    = load_json("autotrad.json", {})     # {guild_id: {channel_id: bool}}
+titles_db      = load_json("titles.json", {})       # {guild_id: {user_id: title}}
 
 # ─── VARIABLES EN MÉMOIRE ─────────────────────────────────────────────────────
 message_tracker  = defaultdict(list)
@@ -6741,6 +6742,355 @@ async def insulte(ctx, member: discord.Member = None):
     e.set_thumbnail(url=member.display_avatar.url)
     e.set_footer(text=f"Kozakura • {ctx.guild.name} • (c'est pour rire !)")
     await ctx.send(embed=e)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🃏 CARTE DE PROFIL
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _current_season() -> str:
+    m = datetime.utcnow().month
+    if m in (12, 1, 2):  return "❄️ Hiver"
+    if m in (3, 4, 5):   return "🌸 Printemps"
+    if m in (6, 7, 8):   return "☀️ Été"
+    return "🍂 Automne"
+
+def _season_color() -> int:
+    m = datetime.utcnow().month
+    if m in (12, 1, 2):  return 0xA8D8EA   # bleu glacé
+    if m in (3, 4, 5):   return 0xFF89B4   # rose sakura
+    if m in (6, 7, 8):   return 0xFFD700   # doré été
+    return 0xD2691E                         # ocre automne
+
+def _get_kozakura_rank(member: discord.Member) -> str:
+    """Retourne le rang Kozakura actuel du membre en cherchant ses rôles."""
+    for grade, titre in RANGS:
+        if discord.utils.get(member.roles, name=grade) or discord.utils.get(member.roles, name=titre):
+            return f"**{grade}** — *{titre}*"
+    return "*Aucun rang Kozakura*"
+
+@bot.command(name="carte")
+async def carte(ctx, member: discord.Member = None):
+    """!carte [@membre] — Carte de profil complète Kozakura"""
+    member = member or ctx.author
+    guild  = ctx.guild
+    gid    = str(guild.id); uid = str(member.id)
+
+    # ── XP / Niveau ──────────────────────────────────────────────────────────
+    xp       = xp_db.get(gid, {}).get(uid, 0)
+    lvl      = get_level(xp)
+    next_xp  = xp_for_level(lvl + 1)
+    prev_xp  = xp_for_level(lvl)
+    progress = (xp - prev_xp) / max(next_xp - prev_xp, 1)
+    bar_len  = 16
+    filled   = int(progress * bar_len)
+    bar      = "█" * filled + "░" * (bar_len - filled)
+    pct      = int(progress * 100)
+
+    # ── Rang leaderboard ─────────────────────────────────────────────────────
+    sorted_lb = sorted(xp_db.get(gid, {}).items(), key=lambda x: x[1], reverse=True)
+    rank_pos  = next((i + 1 for i, (u, _) in enumerate(sorted_lb) if u == uid), "?")
+
+    # ── Trophées / vocal / badges ─────────────────────────────────────────────
+    tdata       = trophees_db.get(gid, {}).get(uid, {})
+    votes       = tdata.get("votes", 0)
+    voice_min   = tdata.get("voice_minutes", 0)
+    booster     = member.premium_since is not None
+    badges      = get_trophee_badges(votes, voice_min, booster)
+    voice_h     = voice_min // 60
+    voice_m     = voice_min % 60
+
+    # ── Sakuras ──────────────────────────────────────────────────────────────
+    bal = get_balance(gid, uid)
+
+    # ── Ancienneté ───────────────────────────────────────────────────────────
+    joined_days = (datetime.utcnow() - member.joined_at.replace(tzinfo=None)).days if member.joined_at else 0
+
+    # ── Statut Discord ────────────────────────────────────────────────────────
+    status_map = {
+        discord.Status.online:    "🟢 En ligne",
+        discord.Status.idle:      "🌙 Absent",
+        discord.Status.dnd:       "🔴 Ne pas déranger",
+        discord.Status.offline:   "⚫ Hors ligne",
+    }
+    statut = status_map.get(member.status, "⚫ Hors ligne")
+    in_voice = member.voice and member.voice.channel
+    if in_voice:
+        statut += f" 🎙️ *{member.voice.channel.name}*"
+
+    # ── Rang Kozakura ────────────────────────────────────────────────────────
+    koza_rank = _get_kozakura_rank(member)
+
+    # ── Titre personnalisé ────────────────────────────────────────────────────
+    custom_title = titles_db.get(gid, {}).get(uid)
+
+    # ── Embed ─────────────────────────────────────────────────────────────────
+    season       = _current_season()
+    season_color = _season_color()
+    now_str      = datetime.utcnow().strftime("%d/%m/%Y")
+
+    e = discord.Embed(
+        title=f"{'✦ ' + custom_title + ' ✦' if custom_title else '🃏 Carte de Profil'}",
+        description=(
+            f"## {member.display_name}\n"
+            f"*{member.name}* • {statut}\n\n"
+            f"**✦ Rang Kozakura :** {koza_rank}\n"
+            f"**✦ Classement XP :** `#{rank_pos}` / {len(sorted_lb)}"
+        ),
+        color=season_color,
+        timestamp=datetime.utcnow()
+    )
+    e.set_thumbnail(url=member.display_avatar.url)
+
+    # XP
+    e.add_field(
+        name=f"⭐ Niveau {lvl}",
+        value=f"`{bar}` {pct}%\n`{xp:,}` / `{next_xp:,}` XP",
+        inline=False
+    )
+
+    # Stats rapides
+    e.add_field(name="🌸 Sakuras",       value=f"`{bal:,}` 🌸", inline=True)
+    e.add_field(name="🎙️ Temps vocal",   value=f"`{voice_h}h {voice_m:02d}m`", inline=True)
+    e.add_field(name="🏅 Votes trophée", value=f"`{votes}`", inline=True)
+
+    # Badges
+    e.add_field(
+        name=f"🎖️ Badges `({len(badges)})`",
+        value=" · ".join(badges[:6]) or "*Aucun badge*",
+        inline=False
+    )
+
+    # Ancienneté
+    joined_str = member.joined_at.strftime("%d/%m/%Y") if member.joined_at else "?"
+    e.add_field(name="📅 Membre depuis",  value=f"`{joined_str}` ({joined_days}j)", inline=True)
+    account_age = (datetime.utcnow() - member.created_at.replace(tzinfo=None)).days
+    e.add_field(name="🗓️ Compte créé",   value=f"il y a `{account_age}` jours", inline=True)
+    e.add_field(name="\u200b", value="\u200b", inline=True)
+
+    e.set_footer(
+        text=f"Kozakura • {guild.name} • {season} • {now_str}",
+        icon_url=guild.me.display_avatar.url
+    )
+    await ctx.send(embed=e)
+
+@bot.command(name="settitle")
+async def settitle(ctx, *, title: str = ""):
+    """!settitle [titre] — Définir son titre personnalisé (vide = supprimer)"""
+    gid = str(ctx.guild.id); uid = str(ctx.author.id)
+    if title:
+        if len(title) > 40:
+            return await ctx.send("❌ Titre trop long (max 40 caractères).", delete_after=5)
+        titles_db.setdefault(gid, {})[uid] = title
+        save_json("titles.json", titles_db)
+        e = koza_embed("✦ Titre défini", f"Ton titre est maintenant : **{title}**\nIl s'affichera sur ta `!carte` !")
+    else:
+        titles_db.setdefault(gid, {}).pop(uid, None)
+        save_json("titles.json", titles_db)
+        e = koza_embed("✦ Titre supprimé", "Ton titre personnalisé a été retiré.")
+    e.set_footer(text=f"Kozakura • {ctx.guild.name}")
+    await ctx.send(embed=e)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🌤️ MÉTÉO
+# ══════════════════════════════════════════════════════════════════════════════
+
+WEATHER_API_KEY = os.environ.get("WEATHER_API_KEY", "")
+
+WEATHER_EMOJIS = {
+    "clear sky":           "☀️", "few clouds": "🌤️", "scattered clouds": "⛅",
+    "broken clouds":       "☁️", "overcast clouds": "☁️",
+    "light rain":          "🌦️", "moderate rain": "🌧️", "heavy intensity rain": "🌧️",
+    "shower rain":         "🌧️", "thunderstorm": "⛈️",
+    "snow":                "❄️", "light snow": "🌨️", "mist": "🌫️",
+    "fog":                 "🌫️", "haze": "🌫️", "drizzle": "🌦️",
+}
+
+def _weather_emoji(description: str) -> str:
+    desc = description.lower()
+    for k, v in WEATHER_EMOJIS.items():
+        if k in desc:
+            return v
+    return "🌡️"
+
+def _temp_color(temp_c: float) -> int:
+    if temp_c <= 0:   return 0xA8D8EA  # glacé
+    if temp_c <= 10:  return 0x6EB5FF  # froid
+    if temp_c <= 20:  return 0x90EE90  # frais
+    if temp_c <= 28:  return 0xFFD700  # chaud
+    return 0xFF4500                     # très chaud
+
+@bot.command(name="meteo")
+async def meteo(ctx, *, ville: str):
+    """!meteo [ville] — Météo en temps réel via OpenWeatherMap"""
+    if not WEATHER_API_KEY:
+        return await ctx.send("❌ Clé API météo non configurée (`WEATHER_API_KEY`).", delete_after=8)
+    url = (
+        f"http://api.openweathermap.org/data/2.5/weather"
+        f"?q={ville}&appid={WEATHER_API_KEY}&units=metric&lang=fr"
+    )
+    async with ctx.typing():
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status == 404:
+                        return await ctx.send(f"❌ Ville **{ville}** introuvable.", delete_after=8)
+                    if resp.status != 200:
+                        return await ctx.send(f"❌ Erreur API météo ({resp.status}).", delete_after=8)
+                    data = await resp.json()
+        except Exception as ex:
+            return await ctx.send(f"❌ Erreur de connexion : {str(ex)[:80]}", delete_after=8)
+
+    temp      = data["main"]["temp"]
+    feels     = data["main"]["feels_like"]
+    humidity  = data["main"]["humidity"]
+    wind      = data["wind"]["speed"]
+    desc      = data["weather"][0]["description"].capitalize()
+    city_name = data["name"]
+    country   = data["sys"]["country"]
+    emoji     = _weather_emoji(data["weather"][0]["description"])
+    sunrise   = datetime.utcfromtimestamp(data["sys"]["sunrise"]).strftime("%H:%M")
+    sunset    = datetime.utcfromtimestamp(data["sys"]["sunset"]).strftime("%H:%M")
+
+    e = discord.Embed(
+        title=f"{emoji} Météo — {city_name}, {country}",
+        description=f"*{desc}*",
+        color=_temp_color(temp),
+        timestamp=datetime.utcnow()
+    )
+    e.add_field(name="🌡️ Température",  value=f"**{temp:.1f}°C**", inline=True)
+    e.add_field(name="🤔 Ressenti",      value=f"**{feels:.1f}°C**", inline=True)
+    e.add_field(name="💧 Humidité",      value=f"**{humidity}%**", inline=True)
+    e.add_field(name="💨 Vent",          value=f"**{wind} m/s**", inline=True)
+    e.add_field(name="🌅 Lever",         value=f"**{sunrise} UTC**", inline=True)
+    e.add_field(name="🌇 Coucher",       value=f"**{sunset} UTC**", inline=True)
+    e.set_footer(text=f"Météo pour {city_name} • Kozakura • OpenWeatherMap")
+    await ctx.send(embed=e)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🌅 MESSAGES BONJOUR / BONNE NUIT AUTOMATIQUES
+# ══════════════════════════════════════════════════════════════════════════════
+
+BONJOUR_MSGS = [
+    "おはようございます ✨ Une nouvelle journée commence sous les cerisiers… Que le soleil guide tes pas aujourd'hui 🌸",
+    "🌅 Le soleil se lève sur le sanctuaire de Kozakura ! Prêt·e pour cette nouvelle aventure ? ⛩️",
+    "🎋 *Le vent du matin souffle doucement…* Bonjour à toi, guerrier·ère de l'aube ! 🗡️",
+    "🌸 Une nouvelle journée s'ouvre comme un pétale de cerisier. Sois béni·e en ce jour ! 💮",
+    "おはよう 🌄 Le temple s'éveille… Les esprits souhaitent une excellente journée à toute la communauté !",
+    "☀️ Que cette journée soit aussi lumineuse que les lanternes du temple ! Bonjour Kozakura~ 🏮",
+    "🌿 *Le kitsune s'étire au soleil levant…* Bonne journée à tous les membres de ce sanctuaire ! 🦊",
+    "✨ Le ciel du Japon se colore d'or ce matin ! C'est un signe de bonne fortune ~ 🎑",
+    "🌸 Debout, samurai·e ! Une nouvelle journée t'attend, pleine de possibilités et de Sakuras ! 💰",
+    "⛩️ Le sanctuaire s'illumine… Que les esprits protecteurs veillent sur toi aujourd'hui ! 🕊️",
+]
+
+BONNE_NUIT_MSGS = [
+    "🌙 La nuit tombe sur le sanctuaire de Kozakura… おやすみなさい, repose-toi bien ! ✨",
+    "🌸 *Les pétales de cerisier dansent dans la nuit étoilée…* Douce nuit à tous ! 💫",
+    "⛩️ Le temple s'endort… Que les rêves t'emportent dans un Japon féodal magique 🗡️",
+    "🌙 おやすみ~ Le kitsune veille sur le serveur cette nuit. Bonne nuit, guerrier·ère ! 🦊",
+    "🎋 *Le bambou se balance sous la lune…* Il est l'heure de recharger tes forces ! 💤",
+    "🌑 La lune de Kozakura brille pour toi ce soir. Dors bien et reviens demain plus fort·e ! 🌟",
+    "✨ Les lanternes s'éteignent une à une… Bonne nuit à toute la communauté 🏮",
+    "💮 *Sous les étoiles du temple, le calme règne…* Repose-toi, demain est un nouveau départ ! 🌸",
+    "🌙 La garde de nuit est assurée par Kozakura~ おやすみなさい à tous ! ⚔️",
+    "🎑 *La lune se reflète dans le lac du sanctuaire…* Que tes rêves soient aussi beaux que ce paysage ! 🌊",
+]
+
+async def _send_bonjour_bonne_nuit(is_morning: bool):
+    import random
+    msgs   = BONJOUR_MSGS if is_morning else BONNE_NUIT_MSGS
+    title  = "🌅 Bonjour Kozakura !" if is_morning else "🌙 Bonne nuit Kozakura !"
+    color  = _season_color()
+    season = _current_season()
+
+    for guild in bot.guilds:
+        ch = discord.utils.find(
+            lambda c: "général" in c.name.lower() or "general" in c.name.lower() or "chat" in c.name.lower(),
+            guild.text_channels
+        )
+        if not ch:
+            continue
+
+        online_count = sum(1 for m in guild.members if m.status != discord.Status.offline and not m.bot)
+
+        e = discord.Embed(
+            title=title,
+            description=random.choice(msgs),
+            color=color,
+            timestamp=datetime.utcnow()
+        )
+        e.add_field(name="👥 Membres en ligne", value=f"**{online_count}** membres actifs 🌸", inline=True)
+        e.add_field(name="🗓️ Saison", value=season, inline=True)
+        if guild.icon:
+            e.set_thumbnail(url=guild.icon.url)
+        e.set_footer(text=f"Kozakura • {guild.name}", icon_url=guild.me.display_avatar.url)
+        try:
+            await ch.send(embed=e)
+        except Exception:
+            pass
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🔄 STATUT ROTATIF DU BOT
+# ══════════════════════════════════════════════════════════════════════════════
+
+_STATUTS = [
+    (discord.ActivityType.watching,   "🌸 Protège Kozakura"),
+    (discord.ActivityType.watching,   "⛩️ Surveille le serveur"),
+    (discord.ActivityType.playing,    "🗡️ En garde"),
+    (discord.ActivityType.watching,   "🌙 Veille sur vous"),
+    (discord.ActivityType.listening,  "✨ Powered by Groq"),
+    (discord.ActivityType.playing,    "🎋 Mode zen activé"),
+    (discord.ActivityType.watching,   "🌸 Les fleurs de cerisier tomber"),
+    (discord.ActivityType.listening,  "🏮 Les prières du temple"),
+    (discord.ActivityType.playing,    "🦊 Avec le kitsune"),
+    (discord.ActivityType.watching,   "💮 Les Sakuras s'envoler"),
+    (discord.ActivityType.competing,  "⚔️ Le tournoi des samouraïs"),
+    (discord.ActivityType.listening,  "🎋 Le vent dans le bambou"),
+    (discord.ActivityType.watching,   "🌕 La lune se lever"),
+    (discord.ActivityType.playing,    "🐉 Avec le dragon"),
+    (discord.ActivityType.watching,   "🎑 Le festival de la lune"),
+    (discord.ActivityType.listening,  "🌊 Les vagues de l'océan"),
+    (discord.ActivityType.playing,    "🎴 aux cartes hanafuda"),
+    (discord.ActivityType.watching,   "💰 Les Sakuras de tout le monde"),
+    (discord.ActivityType.competing,  "🌸 Le classement XP"),
+    (discord.ActivityType.listening,  "🗡️ Les secrets du serveur"),
+    (discord.ActivityType.watching,   "⭐ Chaque nouveau niveau"),
+    (discord.ActivityType.playing,    "🏯 Dans le château Kozakura"),
+]
+
+_statut_index = 0
+
+@tasks.loop(hours=1)
+async def rotate_status():
+    global _statut_index
+    atype, name = _STATUTS[_statut_index % len(_STATUTS)]
+    _statut_index += 1
+    await bot.change_presence(activity=discord.Activity(type=atype, name=name))
+
+@bot.listen("on_ready")
+async def start_rotate_status():
+    if not rotate_status.is_running():
+        rotate_status.start()
+
+
+# ── Intégrer bonjour/bonne nuit dans daily_tasks ─────────────────────────────
+# (patch de la tâche existante via un listener séparé)
+@tasks.loop(minutes=1)
+async def greetings_task():
+    now = datetime.utcnow()
+    if now.hour == 8 and now.minute == 0:
+        await _send_bonjour_bonne_nuit(is_morning=True)
+    if now.hour == 23 and now.minute == 0:
+        await _send_bonjour_bonne_nuit(is_morning=False)
+
+@bot.listen("on_ready")
+async def start_greetings():
+    if not greetings_task.is_running():
+        greetings_task.start()
 
 
 if __name__ == "__main__":
