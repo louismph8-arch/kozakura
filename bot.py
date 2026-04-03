@@ -1422,42 +1422,33 @@ async def leaderboard(ctx):
     await ctx.send(embed=e)
 
 # ─── BIENVENUE MANUELLE ────────────────────────────────────────────────────────
-@bot.command(name="bvn")
-@commands.has_permissions(manage_messages=True)
-async def bvn(ctx, member: discord.Member = None):
-    """!bvn @membre — Envoie un message de bienvenue stylé et donne 50 XP bonus"""
-    member = member or ctx.author
-    guild  = ctx.guild
+# ── ID du salon de bienvenue fixe ─────────────────────────────────────────────
+WELCOME_CHANNEL_ID = 1477427118391558195
 
-    # Cherche le salon contenant "chat" dans le nom
-    chat_ch = discord.utils.find(lambda c: "chat" in c.name.lower(), guild.text_channels)
+async def send_welcome(guild: discord.Guild, member: discord.Member, give_xp: bool = True):
+    """Envoie l'embed de bienvenue dans le salon WELCOME_CHANNEL_ID."""
+    chat_ch = guild.get_channel(WELCOME_CHANNEL_ID)
     if not chat_ch:
-        return await ctx.send("❌ Aucun salon contenant **chat** trouvé.", delete_after=8)
+        return  # salon introuvable, rien à faire
 
-    # ── Données XP ───────────────────────────────────────────────────────────
+    SAKURA_PINK = 0xFF89B4
+
     gid = str(guild.id); uid = str(member.id)
     gid_data = xp_db.setdefault(gid, {})
-    old_xp   = gid_data.get(uid, 0)
-    new_xp   = old_xp + 50
-    gid_data[uid] = new_xp
-    save_json("xp.json", xp_db)
 
+    if give_xp:
+        gid_data[uid] = gid_data.get(uid, 0) + 50
+        save_json("xp.json", xp_db)
+
+    new_xp   = gid_data.get(uid, 0)
     lvl      = get_level(new_xp)
     next_xp  = xp_for_level(lvl + 1)
-
-    # ── Rang dans le leaderboard ─────────────────────────────────────────────
     sorted_lb = sorted(gid_data.items(), key=lambda x: x[1], reverse=True)
     rank_pos  = next((i + 1 for i, (u, _) in enumerate(sorted_lb) if u == uid), None)
 
-    # ── Couleurs rose / sakura ────────────────────────────────────────────────
-    SAKURA_PINK = 0xFF89B4   # rose pastel sakura
+    progress = new_xp / next_xp if next_xp > 0 else 1
+    bar      = "🌸" * int(progress * 12) + "・" * (12 - int(progress * 12))
 
-    # ── Barre de progression XP ──────────────────────────────────────────────
-    progress  = new_xp / next_xp if next_xp > 0 else 1
-    bar_fill  = int(progress * 12)
-    bar       = "🌸" * bar_fill + "・" * (12 - bar_fill)
-
-    # ── Embed principal ───────────────────────────────────────────────────────
     e = discord.Embed(
         title="✿ 桜 ようこそ — Bienvenue ! 桜 ✿",
         description=(
@@ -1473,19 +1464,13 @@ async def bvn(ctx, member: discord.Member = None):
         color=SAKURA_PINK,
         timestamp=datetime.utcnow()
     )
-
     e.set_thumbnail(url=member.display_avatar.url)
     if guild.icon:
         e.set_image(url=guild.icon.url)
 
-    # ── Stats du membre ───────────────────────────────────────────────────────
     e.add_field(
         name="🌸 Niveau & XP",
-        value=(
-            f"**Niveau** ✦ `{lvl}`\n"
-            f"**XP** ✦ `{new_xp}` / `{next_xp}`\n"
-            f"{bar}"
-        ),
+        value=f"**Niveau** ✦ `{lvl}`\n**XP** ✦ `{new_xp}` / `{next_xp}`\n{bar}",
         inline=True
     )
     e.add_field(
@@ -1495,12 +1480,10 @@ async def bvn(ctx, member: discord.Member = None):
     )
     e.add_field(
         name="🎁 Bonus offert",
-        value="**+50 XP** 🌸 cadeau de bienvenue !",
+        value="**+50 XP** 🌸 cadeau de bienvenue !" if give_xp else "Bienvenue sur le serveur 🌸",
         inline=True
     )
 
-    # ── Compte Discord ────────────────────────────────────────────────────────
-    joined_days = (datetime.utcnow() - member.joined_at.replace(tzinfo=None)).days if member.joined_at else 0
     account_age = (datetime.utcnow() - member.created_at.replace(tzinfo=None)).days
     e.add_field(
         name="📅 Présence",
@@ -1511,24 +1494,43 @@ async def bvn(ctx, member: discord.Member = None):
         inline=True
     )
 
-    # ── Rôles ─────────────────────────────────────────────────────────────────
     roles = [r.mention for r in member.roles if r.name != "@everyone"]
     e.add_field(
         name=f"🎭 Rôles `({len(roles)})`",
         value=", ".join(roles[:5]) + ("…" if len(roles) > 5 else "") if roles else "*aucun rôle*",
         inline=True
     )
-
     e.set_footer(
         text="✿ Kozakura Bot ✿ • 桜の加護があなたと共にありますように",
         icon_url=guild.me.display_avatar.url
     )
-
     await chat_ch.send(embed=e)
 
-    # Confirmation discrète dans le salon d'origine si différent
-    if ctx.channel != chat_ch:
-        await ctx.send(f"🌸 Message de bienvenue envoyé dans {chat_ch.mention} avec **+50 XP** pour {member.mention} !", delete_after=8)
+
+@bot.listen("on_member_join")
+async def auto_welcome(member: discord.Member):
+    """Envoie automatiquement le message de bienvenue à chaque arrivée."""
+    if member.bot:
+        return
+    await send_welcome(member.guild, member, give_xp=True)
+
+
+@bot.command(name="bvn")
+async def bvn(ctx, member: discord.Member = None):
+    """!bvn [@membre] — Envoie un message de bienvenue dans le salon dédié"""
+    member  = member or ctx.author
+    guild   = ctx.guild
+    chat_ch = guild.get_channel(WELCOME_CHANNEL_ID)
+
+    await send_welcome(guild, member, give_xp=True)
+
+    if chat_ch and ctx.channel.id != WELCOME_CHANNEL_ID:
+        await ctx.send(
+            f"🌸 Bienvenue sur le serveur {member.mention} ! Message envoyé dans {chat_ch.mention} ✿",
+            delete_after=8
+        )
+    elif not chat_ch:
+        await ctx.send("❌ Salon de bienvenue introuvable (ID: `1477427118391558195`).", delete_after=8)
 
 # ─── SUGGESTIONS / SONDAGES ───────────────────────────────────────────────────
 @bot.command()
