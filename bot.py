@@ -127,6 +127,9 @@ user_prefs_db  = load_json("user_prefs.json", {})   # pseudo préféré IA
 banned_db      = load_json("banned_members.json", {})  # historique bannis
 autotrad_db    = load_json("autotrad.json", {})     # {guild_id: {channel_id: bool}}
 titles_db      = load_json("titles.json", {})       # {guild_id: {user_id: title}}
+watchlist_db   = load_json("watchlist.json", {})    # {guild_id: {user_id: {reason, by, date}}}
+shadowban_db   = load_json("shadowban.json", {})    # {guild_id: {user_id: True}}
+reports_db     = load_json("reports.json", {})      # {guild_id: [{reporter, target, reason, date}]}
 
 # ─── VARIABLES EN MÉMOIRE ─────────────────────────────────────────────────────
 message_tracker  = defaultdict(list)
@@ -191,7 +194,22 @@ DISTRESS_WORDS = [
     "personne ne me comprend", "je suis seul au monde",
     "je me sens inutile", "je veux disparaître",
 ]
-SUSPICIOUS_LINKS = ["bit.ly", "free-nitro", "discord-gift", "steamcommunity.ru", "discordnitro", "nitro-gift", "free-steam"]
+SUSPICIOUS_LINKS = [
+    "bit.ly", "free-nitro", "discord-gift", "steamcommunity.ru", "discordnitro", "nitro-gift", "free-steam",
+    # IP grabbers / loggers
+    "grabify.link", "iplogger.org", "iplogger.com", "ipgrab.me", "2no.co", "yip.su",
+    "ps3cfw.com", "lovebird.guru", "blasze.tk", "api.grabify", "iplis.ru", "02ip.ru",
+    "ezstat.ru", "network-ip.ru", "iptracker.org", "getiplocation.net", "whatstheirip.com",
+    "trackip.net", "spylink.net", "href.li", "crabdance.com", "gyazo.link",
+    # Phishing Discord / Steam
+    "discordapp.io", "discord-app.io", "discordgift.site", "discord-nitro.site",
+    "discord-nitro.gift", "discord-gifts.site", "discordnitro.com", "dsc.gg/free",
+    "steamcommunity.pw", "steam-community.ru", "steampowered.gift", "steam-trade.ru",
+    "csgo-skins.com", "csgo-trade.com",
+    # Scam/malware courants
+    "pornhub.gift", "free-robux.gg", "roblox.gift", "fortnite-vbucks.com",
+    "nitro.gift", "nitro-discord.com", "discordapp.gift",
+]
 XP_PER_MSG       = 10
 XP_COOLDOWN      = 60
 LEVEL_ROLES      = {5: "Niveau 5", 10: "Niveau 10", 20: "Niveau 20", 50: "Niveau 50"}
@@ -737,8 +755,50 @@ async def on_message(message):
                 )
                 return
 
-    # ── Anti-mentions massives — DÉSACTIVÉ ───────────────────────────────────
-    pass
+    # ── Anti-mentions massives ────────────────────────────────────────────────
+    mention_count = len(message.mentions) + len(message.role_mentions)
+    if mention_count >= MENTION_THRESHOLD and not has_sanction_role(author, ROLES_BAN + ROLES_MUTE):
+        now_m = time.time()
+        mention_tracker[uid].append(now_m)
+        mention_tracker[uid] = [t for t in mention_tracker[uid] if now_m - t < 10]
+        if len(mention_tracker[uid]) >= 2 or mention_count >= 8:
+            try: await message.delete()
+            except Exception: pass
+            until_m = datetime.utcnow() + timedelta(minutes=30)
+            try: await author.timeout(until_m, reason="[Auto-mod] Mentions massives")
+            except Exception: pass
+            e_men = discord.Embed(
+                title="🔔 MENTIONS MASSIVES DÉTECTÉES",
+                description=f"{author.mention} a mentionné **{mention_count} membres/rôles** d'un coup.",
+                color=discord.Color.dark_red(), timestamp=datetime.utcnow()
+            )
+            e_men.add_field(name="👤 Membre", value=f"{author} (`{author.id}`)", inline=True)
+            e_men.add_field(name="🔇 Action",  value="Mute 30 minutes", inline=True)
+            e_men.set_thumbnail(url=author.display_avatar.url)
+            await log_security(guild, e_men)
+            await message.channel.send(
+                f"{author.mention} ⛔ Mentions massives interdites — mute 30 min.", delete_after=8
+            )
+            return
+
+    # ── Watchlist — surveillance renforcée ────────────────────────────────────
+    if uid in watchlist_db.get(str(guild.id), {}):
+        wdata = watchlist_db[str(guild.id)][uid]
+        e_watch = discord.Embed(
+            title="👁️ Membre Surveillé — Message",
+            description=f"{author.mention} (watchlist) a envoyé un message dans {message.channel.mention}",
+            color=discord.Color.gold(), timestamp=datetime.utcnow()
+        )
+        e_watch.add_field(name="💬 Message", value=message.content[:500] or "*(média)*", inline=False)
+        e_watch.add_field(name="📋 Raison watchlist", value=wdata.get("reason", "?"), inline=False)
+        e_watch.set_thumbnail(url=author.display_avatar.url)
+        await log_security(guild, e_watch)
+
+    # ── Shadowban — suppression silencieuse ───────────────────────────────────
+    if uid in shadowban_db.get(str(guild.id), {}):
+        try: await message.delete()
+        except Exception: pass
+        return
 
     # ── Détection IA contextuelle (mots dangereux en contexte) ───────────────
     if GROQ_API_KEY and len(message.content) > 20:
@@ -1829,45 +1889,58 @@ async def sanctions(ctx, member: discord.Member):
     await ctx.send(embed=e)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🎫 SYSTÈME DE TICKETS AVANCÉ — 4 CATÉGORIES
+# 🎫 SYSTÈME DE TICKETS PREMIUM — KOZAKURA
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Types de tickets avec leur config
 TICKET_TYPES = {
     "staff": {
-        "label": "⚒️ Contacter un Gestion Staff",
+        "label": "⚒️ Gestion Staff",
         "emoji": "⚒️",
-        "color": discord.Color.blue(),
+        "color": discord.Color.from_rgb(88, 101, 242),
         "role":  ROLE_GESTION_STAFF,
-        "description": "Pour devenir staff, réclamer un rank up ou récupérer des rôles.",
+        "description": "Candidature staff, rank-up, récupération de rôles perdus.",
         "style": discord.ButtonStyle.blurple,
+        "icon": "🛠️",
     },
     "abus": {
-        "label": "🔴 Contacter un Gestion Abus",
-        "emoji": "🔴",
-        "color": discord.Color.red(),
+        "label": "🛡️ Gestion Abus",
+        "emoji": "🛡️",
+        "color": discord.Color.from_rgb(237, 66, 69),
         "role":  ROLE_GESTION_ABUS,
-        "description": "Pour signaler un abus, un conflit ou contester une sanction.",
+        "description": "Signaler un abus, conflit ou contester une sanction.",
         "style": discord.ButtonStyle.red,
+        "icon": "⚖️",
     },
     "cod": {
-        "label": "👑 Contacter B#tch",
+        "label": "👑 Direction",
         "emoji": "👑",
         "color": discord.Color.gold(),
         "role":  ROLE_COD,
         "role_id": ROLE_COD_ID,
-        "description": "Pour contacter la direction. Décalages, fusions, fournisseurs...",
+        "description": "Contacter la direction. Décalages, fusions, sujets stratégiques.",
         "style": discord.ButtonStyle.grey,
+        "icon": "🏯",
     },
     "partenariat": {
-        "label": "🤝 Contacter Partenariat",
+        "label": "🤝 Partenariat",
         "emoji": "🤝",
-        "color": discord.Color.green(),
+        "color": discord.Color.from_rgb(87, 242, 135),
         "role":  ROLE_COD,
         "role_id": ROLE_COD_ID,
-        "description": "Pour proposer un partenariat avec le serveur.",
+        "description": "Proposer un partenariat avec le serveur Kozakura.",
         "style": discord.ButtonStyle.green,
+        "icon": "🌸",
     },
+}
+
+TICKET_PRIORITY_COLORS = {
+    "urgent": discord.Color.from_rgb(237, 66, 69),
+    "haute":  discord.Color.from_rgb(255, 149, 0),
+    "normale": discord.Color.from_rgb(88, 101, 242),
+    "basse":  discord.Color.from_rgb(87, 242, 135),
+}
+TICKET_PRIORITY_EMOJI = {
+    "urgent": "🔴", "haute": "🟠", "normale": "🔵", "basse": "🟢",
 }
 
 async def log_ticket(guild, embed):
@@ -3429,6 +3502,107 @@ async def on_webhooks_update(channel):
             )
             await log_security(guild, e)
 
+# ── Events sécurité supplémentaires ──────────────────────────────────────────
+
+@bot.event
+async def on_guild_update(before, after):
+    """Détecte les modifications suspectes du serveur (nuke)"""
+    guild = after
+    changes = []
+    if before.name != after.name:
+        changes.append(f"📛 Nom : `{before.name}` → `{after.name}`")
+    if before.icon != after.icon:
+        changes.append("🖼️ Icône modifiée")
+    if before.vanity_url_code != after.vanity_url_code:
+        changes.append(f"🔗 Vanity URL modifiée : `{before.vanity_url_code}` → `{after.vanity_url_code}`")
+    if before.verification_level != after.verification_level:
+        changes.append(f"🛡️ Niveau vérif : `{before.verification_level}` → `{after.verification_level}`")
+
+    if not changes:
+        return
+
+    async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.guild_update):
+        if entry.user and not entry.user.bot:
+            await nuke_action(guild, entry.user, f"Modification serveur : {', '.join(changes)}")
+            e = discord.Embed(
+                title="⚙️ Serveur Modifié",
+                description=f"Modifications détectées par {entry.user.mention}",
+                color=discord.Color.orange(), timestamp=datetime.utcnow()
+            )
+            for chg in changes:
+                e.add_field(name="Changement", value=chg, inline=False)
+            e.set_footer(text="Kozakura Security")
+            await log_security(guild, e)
+
+@bot.event
+async def on_guild_role_create(role):
+    """Détecte la création massive de rôles (nuke)"""
+    guild = role.guild
+    async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.role_create):
+        if entry.user and not entry.user.bot:
+            await nuke_action(guild, entry.user, f"Création rôle : @{role.name}")
+
+@bot.event
+async def on_member_update(before, after):
+    """Détecte attribution de permissions dangereuses à un membre"""
+    if before.roles == after.roles:
+        return
+    guild = after.guild
+    added_roles = [r for r in after.roles if r not in before.roles]
+    dangerous_perms = ["administrator", "manage_guild", "manage_channels",
+                       "manage_roles", "manage_webhooks", "ban_members", "kick_members"]
+    for role in added_roles:
+        if any(getattr(role.permissions, p, False) for p in dangerous_perms):
+            async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.member_role_update):
+                moderator = entry.user
+                break
+            else:
+                moderator = None
+            e = discord.Embed(
+                title="⚠️ Rôle Dangereux Attribué",
+                description=f"{after.mention} a reçu le rôle **{role.name}** (permissions élevées)",
+                color=discord.Color.orange(), timestamp=datetime.utcnow()
+            )
+            e.add_field(name="👤 Membre", value=f"{after} (`{after.id}`)", inline=True)
+            e.add_field(name="🎭 Rôle", value=f"@{role.name}", inline=True)
+            if moderator:
+                e.add_field(name="🛡️ Attribué par", value=f"{moderator.mention}", inline=True)
+            e.add_field(name="⚙️ Permissions", value=", ".join(p for p in dangerous_perms if getattr(role.permissions, p, False)), inline=False)
+            e.set_thumbnail(url=after.display_avatar.url)
+            e.set_footer(text="Kozakura Security • Vérifiez si intentionnel")
+            await log_security(guild, e)
+            break
+
+@bot.event
+async def on_invite_create(invite):
+    """Log les invitations créées"""
+    guild = invite.guild
+    e = discord.Embed(
+        title="🔗 Invitation Créée",
+        description=f"Nouvelle invitation par {invite.inviter.mention if invite.inviter else '?'}",
+        color=discord.Color.blurple(), timestamp=datetime.utcnow()
+    )
+    e.add_field(name="📎 Code", value=f"`discord.gg/{invite.code}`", inline=True)
+    e.add_field(name="♾️ Utilisations max", value=str(invite.max_uses) if invite.max_uses else "Illimité", inline=True)
+    e.add_field(name="⏳ Expire dans", value=str(timedelta(seconds=invite.max_age)) if invite.max_age else "Jamais", inline=True)
+    e.add_field(name="📌 Salon", value=invite.channel.mention if invite.channel else "?", inline=True)
+    e.set_footer(text="Kozakura Security • Invite Tracker")
+    await log_security(guild, e)
+
+@bot.event
+async def on_invite_delete(invite):
+    """Log les invitations supprimées"""
+    if not invite.guild:
+        return
+    e = discord.Embed(
+        title="🔗 Invitation Supprimée",
+        description=f"Code : `discord.gg/{invite.code}`",
+        color=discord.Color.red(), timestamp=datetime.utcnow()
+    )
+    e.add_field(name="📌 Salon", value=invite.channel.mention if invite.channel else "?", inline=True)
+    e.set_footer(text="Kozakura Security")
+    await log_security(invite.guild, e)
+
 # ── Commandes Lockdown ────────────────────────────────────────────────────────
 @bot.command(name="lockdown")
 @commands.has_permissions(administrator=True)
@@ -3569,6 +3743,194 @@ async def set_min_age(ctx, jours: int):
     global ACCOUNT_MIN_AGE_DAYS
     ACCOUNT_MIN_AGE_DAYS = max(0, jours)
     await ctx.send(f"✅ Âge minimum des comptes : **{ACCOUNT_MIN_AGE_DAYS} jours**")
+
+# ── Shadowban ────────────────────────────────────────────────────────────────
+
+@bot.command(name="shadowban")
+@commands.has_permissions(administrator=True)
+async def shadowban(ctx, member: discord.Member, *, raison: str = "Aucune raison"):
+    """!shadowban @membre [raison] — Supprime silencieusement tous ses messages sans qu'il le sache"""
+    gid = str(ctx.guild.id); uid = str(member.id)
+    shadowban_db.setdefault(gid, {})[uid] = {"reason": raison, "by": str(ctx.author.id), "date": str(datetime.utcnow())}
+    save_json("shadowban.json", shadowban_db)
+    e = discord.Embed(
+        title="👻 Shadowban Appliqué",
+        description=f"{member.mention} est maintenant shadowban — ses messages seront supprimés silencieusement.",
+        color=discord.Color.dark_gray(), timestamp=datetime.utcnow()
+    )
+    e.add_field(name="📋 Raison", value=raison)
+    e.add_field(name="🛡️ Par", value=ctx.author.mention)
+    e.set_footer(text="Kozakura Security • Shadowban (invisible pour le membre)")
+    await ctx.send(embed=e)
+    await log_security(ctx.guild, e)
+
+@bot.command(name="unshadowban")
+@commands.has_permissions(administrator=True)
+async def unshadowban(ctx, member: discord.Member):
+    """!unshadowban @membre — Lève le shadowban"""
+    gid = str(ctx.guild.id); uid = str(member.id)
+    if uid not in shadowban_db.get(gid, {}):
+        return await ctx.send(f"❌ {member.mention} n'est pas shadowban.")
+    shadowban_db[gid].pop(uid)
+    save_json("shadowban.json", shadowban_db)
+    await ctx.send(f"✅ Shadowban levé pour {member.mention}.")
+
+# ── Watchlist ─────────────────────────────────────────────────────────────────
+
+@bot.command(name="watchlist")
+async def watchlist_add(ctx, member: discord.Member, *, raison: str = "Surveillance"):
+    """!watchlist @membre [raison] — Surveille un membre (alerte staff à chaque message)"""
+    if not has_sanction_role(ctx.author, ROLES_MUTE):
+        return await ctx.send("❌ Permission insuffisante.", delete_after=5)
+    gid = str(ctx.guild.id); uid = str(member.id)
+    watchlist_db.setdefault(gid, {})[uid] = {
+        "reason": raison, "by": str(ctx.author.id), "by_name": ctx.author.display_name,
+        "date": str(datetime.utcnow())
+    }
+    save_json("watchlist.json", watchlist_db)
+    e = discord.Embed(
+        title="👁️ Membre Ajouté à la Watchlist",
+        description=f"{member.mention} est maintenant sous surveillance.",
+        color=discord.Color.gold(), timestamp=datetime.utcnow()
+    )
+    e.add_field(name="📋 Raison", value=raison)
+    e.add_field(name="🛡️ Par", value=ctx.author.mention)
+    e.set_footer(text="Kozakura Security • Watchlist")
+    await ctx.send(embed=e)
+    await log_security(ctx.guild, e)
+
+@bot.command(name="unwatch")
+async def watchlist_remove(ctx, member: discord.Member):
+    """!unwatch @membre — Retire un membre de la watchlist"""
+    if not has_sanction_role(ctx.author, ROLES_MUTE):
+        return await ctx.send("❌ Permission insuffisante.", delete_after=5)
+    gid = str(ctx.guild.id); uid = str(member.id)
+    if uid not in watchlist_db.get(gid, {}):
+        return await ctx.send(f"❌ {member.mention} n'est pas en watchlist.")
+    watchlist_db[gid].pop(uid)
+    save_json("watchlist.json", watchlist_db)
+    await ctx.send(f"✅ {member.mention} retiré de la watchlist.")
+
+@bot.command(name="watchers")
+async def watchlist_view(ctx):
+    """!watchers — Liste tous les membres sous surveillance"""
+    if not has_sanction_role(ctx.author, ROLES_MUTE):
+        return await ctx.send("❌ Permission insuffisante.", delete_after=5)
+    gid = str(ctx.guild.id)
+    data = watchlist_db.get(gid, {})
+    if not data:
+        return await ctx.send("✅ Aucun membre en watchlist.")
+    e = discord.Embed(title="👁️ Watchlist", color=discord.Color.gold(), timestamp=datetime.utcnow())
+    for uid, wdata in list(data.items())[:15]:
+        member = ctx.guild.get_member(int(uid))
+        name = member.mention if member else f"`{uid}`"
+        e.add_field(name=name, value=f"📋 {wdata.get('reason','?')}\n🛡️ {wdata.get('by_name','?')} — {wdata.get('date','?')[:10]}", inline=False)
+    e.set_footer(text=f"{len(data)} membre(s) surveillé(s)")
+    await ctx.send(embed=e)
+
+# ── Report ────────────────────────────────────────────────────────────────────
+
+@bot.command(name="report")
+async def report(ctx, member: discord.Member, *, raison: str):
+    """!report @membre [raison] — Signaler un membre au staff"""
+    if member == ctx.author:
+        return await ctx.send("❌ Tu ne peux pas te signaler toi-même.", delete_after=5)
+    gid = str(ctx.guild.id)
+    reports_db.setdefault(gid, []).append({
+        "reporter": str(ctx.author.id), "reporter_name": ctx.author.display_name,
+        "target":   str(member.id),     "target_name":   member.display_name,
+        "reason":   raison,             "date":          str(datetime.utcnow()),
+        "channel":  str(ctx.channel.id)
+    })
+    save_json("reports.json", reports_db)
+
+    gestion_role = discord.utils.get(ctx.guild.roles, name=ROLE_GESTION_STAFF)
+    mention_staff = gestion_role.mention if gestion_role else "**@Gestion**"
+
+    e = discord.Embed(
+        title="🚨 Signalement Membre",
+        description=f"**{ctx.author.display_name}** a signalé **{member.display_name}**",
+        color=discord.Color.red(), timestamp=datetime.utcnow()
+    )
+    e.add_field(name="👤 Signalé", value=f"{member.mention} (`{member.id}`)", inline=True)
+    e.add_field(name="📢 Signaleur", value=ctx.author.mention, inline=True)
+    e.add_field(name="📋 Raison", value=raison, inline=False)
+    e.add_field(name="📌 Salon", value=ctx.channel.mention, inline=True)
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.set_footer(text="Kozakura • Système de signalement")
+
+    sec_ch = discord.utils.find(
+        lambda c: any(n in c.name.lower() for n in SECURITY_LOG_NAMES), ctx.guild.text_channels
+    )
+    if sec_ch:
+        await sec_ch.send(content=f"🚨 {mention_staff} — Nouveau signalement !", embed=e)
+    else:
+        await log_security(ctx.guild, e)
+
+    try: await ctx.message.delete()
+    except Exception: pass
+    await ctx.send(f"✅ Ton signalement a été transmis au staff. Merci.", delete_after=8)
+
+@bot.command(name="reports")
+@commands.has_permissions(kick_members=True)
+async def view_reports(ctx, member: discord.Member = None):
+    """!reports [@membre] — Liste les signalements"""
+    gid = str(ctx.guild.id)
+    data = reports_db.get(gid, [])
+    if member:
+        data = [r for r in data if r["target"] == str(member.id)]
+    if not data:
+        return await ctx.send("✅ Aucun signalement.")
+    e = discord.Embed(
+        title=f"📋 Signalements{' de '+member.display_name if member else ''}",
+        color=discord.Color.red(), timestamp=datetime.utcnow()
+    )
+    for r in data[-10:]:
+        e.add_field(
+            name=f"🚨 {r['target_name']} — {r['date'][:10]}",
+            value=f"📋 {r['reason']}\n📢 Par : {r['reporter_name']}",
+            inline=False
+        )
+    e.set_footer(text=f"{len(data)} signalement(s)")
+    await ctx.send(embed=e)
+
+# ── Forceban ─────────────────────────────────────────────────────────────────
+
+@bot.command(name="forceban")
+async def forceban(ctx, user_id: int, *, reason: str = "Aucune raison"):
+    """!forceban [id] [raison] — Bannit un utilisateur par ID même s'il n'est pas sur le serveur"""
+    if not has_sanction_role(ctx.author, ROLES_BAN):
+        return await ctx.send("❌ Permission insuffisante.", delete_after=5)
+    try:
+        user = await bot.fetch_user(user_id)
+        await ctx.guild.ban(user, reason=reason, delete_message_days=1)
+        e = discord.Embed(
+            title="🔨 Forceban",
+            description=f"**{user}** (`{user_id}`) banni par ID.",
+            color=discord.Color.dark_red(), timestamp=datetime.utcnow()
+        )
+        e.add_field(name="📋 Raison", value=reason)
+        e.add_field(name="🛡️ Par", value=ctx.author.mention)
+        await ctx.send(embed=e)
+        await log_security(ctx.guild, e)
+    except Exception as ex:
+        await ctx.send(f"❌ Erreur : `{ex}`")
+
+# ── Setantispam ───────────────────────────────────────────────────────────────
+
+@bot.command(name="setantispam")
+@commands.has_permissions(administrator=True)
+async def set_antispam(ctx, messages: int = None, secondes: int = None):
+    """!setantispam [messages] [secondes] — Configure le seuil anti-spam (ex: !setantispam 5 5)"""
+    global message_tracker
+    if messages is None or secondes is None:
+        return await ctx.send(
+            f"⚙️ Config actuelle : **5 messages** en **5 secondes**\n"
+            f"Usage : `!setantispam [nb_messages] [fenêtre_secondes]`"
+        )
+    set_cfg(ctx.guild.id, "antispam_msgs", max(3, min(messages, 20)))
+    set_cfg(ctx.guild.id, "antispam_secs", max(2, min(secondes, 60)))
+    await ctx.send(f"✅ Anti-spam : **{messages} messages** en **{secondes}s** → mute auto.")
 
 # ── Freeze / Unfreeze ─────────────────────────────────────────────────────────
 frozen_members = {}  # {member_id: {channel_id: overwrite_pair}}
