@@ -63,7 +63,7 @@ tr:last-child td{border-bottom:none;}tr:hover td{background:rgba(255,255,255,.02
 .badge{display:inline-block;padding:.2rem .6rem;border-radius:999px;font-size:.65rem;font-family:'Syne',sans-serif;font-weight:600;letter-spacing:1px;text-transform:uppercase;}
 .badge-red{background:rgba(239,35,60,.15);color:var(--red);}.badge-green{background:rgba(6,214,160,.15);color:var(--green);}
 .badge-yellow{background:rgba(255,209,102,.15);color:var(--gold);}.badge-pink{background:rgba(255,45,120,.15);color:var(--pink);}
-.badge-grey{background:rgba(107,107,138,.15);color:var(--grey);}
+.badge-grey{background:rgba(107,107,138,.15);color:var(--grey);}.badge-orange{background:rgba(255,149,0,.15);color:#ff9500;}
 .btn{display:inline-flex;align-items:center;gap:.4rem;padding:.45rem .9rem;border-radius:5px;font-size:.75rem;font-family:'Syne',sans-serif;font-weight:600;letter-spacing:1px;cursor:pointer;border:none;transition:all .2s;text-transform:uppercase;}
 .btn-danger{background:rgba(239,35,60,.15);color:var(--red);}.btn-danger:hover{background:var(--red);color:#fff;}
 .btn-warn{background:rgba(255,209,102,.15);color:var(--gold);}.btn-warn:hover{background:var(--gold);color:#000;}
@@ -146,6 +146,10 @@ textarea.form-control{resize:vertical;min-height:80px;}
     <div class="nav-item" onclick="showPage('xp',this)"><span>🏆</span> XP & Niveaux</div>
     <div class="nav-item" onclick="showPage('trophees',this)"><span>🏅</span> Trophées</div>
     <div class="nav-item" onclick="showPage('giveaways',this)"><span>🎉</span> Giveaways</div>
+    <div class="nav-section">Sécurité</div>
+    <div class="nav-item" onclick="showPage('shadowban',this)"><span>👻</span> Shadowban</div>
+    <div class="nav-item" onclick="showPage('watchlist',this)"><span>👁️</span> Watchlist</div>
+    <div class="nav-item" onclick="showPage('reports',this)"><span>🚨</span> Signalements</div>
     <div class="nav-section">Paramètres</div>
     <div class="nav-item" onclick="showPage('config',this)"><span>⚙️</span> Configuration</div>
     <div class="sidebar-footer"><div class="ping-badge"><div class="ping-dot"></div><span id="ping-text">-- ms</span></div></div>
@@ -184,11 +188,47 @@ textarea.form-control{resize:vertical;min-height:80px;}
     </div>
 
     <div class="page" id="page-tickets">
-      <div class="page-header"><h1><span>TICKETS</span></h1><p>Tickets ouverts</p></div>
+      <div class="page-header"><h1><span>TICKETS</span></h1><p>Gérer les tickets de support</p></div>
       <div class="table-wrap">
-        <div class="table-header"><span class="table-title">Tickets ouverts</span></div>
-        <table><thead><tr><th>Salon</th><th>Type</th><th>Ouvert par</th><th>Actions</th></tr></thead>
-        <tbody id="tickets-tbody"><tr><td colspan="4"><div class="empty"><div class="loader"></div></div></td></tr></tbody></table>
+        <div class="table-header">
+          <span class="table-title">Tickets</span>
+          <div style="display:flex;gap:.5rem;">
+            <select id="ticket-filter" style="background:var(--dark2);border:1px solid rgba(255,255,255,.1);color:var(--white);padding:.4rem .8rem;border-radius:6px;font-size:.8rem;" onchange="loadTickets()">
+              <option value="open">Ouverts</option>
+              <option value="closed">Fermés</option>
+              <option value="all">Tous</option>
+            </select>
+          </div>
+        </div>
+        <table><thead><tr><th>#</th><th>Type</th><th>Priorité</th><th>Ouvert par</th><th>Claim</th><th>Date</th><th>Actions</th></tr></thead>
+        <tbody id="tickets-tbody"><tr><td colspan="7"><div class="empty"><div class="loader"></div></div></td></tr></tbody></table>
+      </div>
+    </div>
+
+    <div class="page" id="page-shadowban">
+      <div class="page-header"><h1><span>SHADOWBAN</span></h1><p>Membres dont les messages sont supprimés silencieusement</p></div>
+      <div class="table-wrap">
+        <div class="table-header"><span class="table-title">Shadowbans actifs</span></div>
+        <table><thead><tr><th>Membre</th><th>Raison</th><th>Date</th><th>Actions</th></tr></thead>
+        <tbody id="shadowban-tbody"><tr><td colspan="4"><div class="empty"><div class="loader"></div></div></td></tr></tbody></table>
+      </div>
+    </div>
+
+    <div class="page" id="page-watchlist">
+      <div class="page-header"><h1><span>WATCHLIST</span></h1><p>Membres sous surveillance — alerte à chaque message</p></div>
+      <div class="table-wrap">
+        <div class="table-header"><span class="table-title">Membres surveillés</span></div>
+        <table><thead><tr><th>Membre</th><th>Raison</th><th>Ajouté par</th><th>Date</th><th>Actions</th></tr></thead>
+        <tbody id="watchlist-tbody"><tr><td colspan="5"><div class="empty"><div class="loader"></div></div></td></tr></tbody></table>
+      </div>
+    </div>
+
+    <div class="page" id="page-reports">
+      <div class="page-header"><h1><span>SIGNALEMENTS</span></h1><p>Membres signalés par la communauté</p></div>
+      <div class="table-wrap">
+        <div class="table-header"><span class="table-title">Derniers signalements</span></div>
+        <table><thead><tr><th>Signalé</th><th>Signaleur</th><th>Raison</th><th>Date</th></tr></thead>
+        <tbody id="reports-tbody"><tr><td colspan="4"><div class="empty"><div class="loader"></div></div></td></tr></tbody></table>
       </div>
     </div>
 
@@ -331,6 +371,7 @@ async function doLogin(){
 
 async function apiGet(p){const r=await fetch(API_URL+p,{headers:{'X-API-Key':API_KEY}});return r.json();}
 async function apiPost(p,b={}){const r=await fetch(API_URL+p,{method:'POST',headers:{'Content-Type':'application/json','X-API-Key':API_KEY},body:JSON.stringify(b)});return r.json();}
+async function apiDelete(p){const r=await fetch(API_URL+p,{method:'DELETE',headers:{'X-API-Key':API_KEY}});return r.json();}
 
 function showPage(name,el){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
@@ -338,7 +379,7 @@ function showPage(name,el){
   document.getElementById('page-'+name).classList.add('active');
   if(el)el.classList.add('active');
   if(logsInterval){clearInterval(logsInterval);logsInterval=null;}
-  const map={overview:loadOverview,members:loadMembers,sanctions:loadSanctions,tickets:loadTickets,roles:loadRoles,ranks:loadRanks,voice:loadVoice,messages:()=>{},logs:()=>{loadLogs();logsInterval=setInterval(loadLogs,5000);},xp:loadXP,trophees:loadTrophees,giveaways:loadGiveaways,config:loadConfig};
+  const map={overview:loadOverview,members:loadMembers,sanctions:loadSanctions,tickets:loadTickets,roles:loadRoles,ranks:loadRanks,voice:loadVoice,messages:()=>{},logs:()=>{loadLogs();logsInterval=setInterval(loadLogs,5000);},xp:loadXP,trophees:loadTrophees,giveaways:loadGiveaways,config:loadConfig,shadowban:loadShadowban,watchlist:loadWatchlist,reports:loadReports};
   if(map[name])map[name]();
 }
 
@@ -478,14 +519,87 @@ function filterSanctions(q){renderSanctions(allSanctions.filter(s=>s.member_name
 
 async function loadTickets(){
   const tb=document.getElementById('tickets-tbody');
-  tb.innerHTML='<tr><td colspan="4"><div class="empty"><div class="loader"></div></div></td></tr>';
-  try{const d=await apiGet(`/api/${GUILD_ID}/tickets`);const t=d.tickets||[];
-  if(!t.length){tb.innerHTML='<tr><td colspan="4"><div class="empty"><div style="font-size:2rem">🎫</div><p>Aucun ticket</p></div></td></tr>';return;}
-  const tc={'Gestion Staff':'badge-pink','Gestion Abus':'badge-red','Kozakura C.O.D':'badge-yellow','Partenariat':'badge-green'};
-  tb.innerHTML=t.map(x=>`<tr><td>#${x.channel_name}</td><td><span class="badge ${tc[x.type]||'badge-grey'}">${x.type}</span></td><td style="color:var(--grey)">${x.opener}</td>
-    <td><button class="btn btn-danger" onclick="closeTicket('${x.channel_id}','${x.channel_name}')">🔒 Fermer</button></td></tr>`).join('');}catch(e){}
+  const cols=7;
+  tb.innerHTML=`<tr><td colspan="${cols}"><div class="empty"><div class="loader"></div></div></td></tr>`;
+  const filter=document.getElementById('ticket-filter')?.value||'open';
+  try{
+    const d=await apiGet(`/api/${GUILD_ID}/tickets?status=${filter}`);
+    const t=d.tickets||[];
+    if(!t.length){tb.innerHTML=`<tr><td colspan="${cols}"><div class="empty"><div style="font-size:2rem">🎫</div><p>Aucun ticket</p></div></td></tr>`;return;}
+    const tc={staff:'badge-pink',abus:'badge-red',cod:'badge-yellow',partenariat:'badge-green'};
+    const pc={urgent:'badge-red',haute:'badge-orange',normale:'badge-grey',basse:'badge-green'};
+    const pe={urgent:'🔴',haute:'🟠',normale:'🔵',basse:'🟢'};
+    tb.innerHTML=t.map(x=>{
+      const typeKey=(x.type||'').toLowerCase();
+      const prio=x.priority||'normale';
+      const date=x.opened_at?x.opened_at.slice(0,16).replace('T',' '):'?';
+      const actions=x.status==='open'
+        ?`<button class="btn btn-danger" onclick="closeTicket('${x.channel_id}','${x.channel_name}')">🔒</button>`
+        :`<span style="color:var(--grey);font-size:.75rem">Fermé</span>`;
+      return `<tr>
+        <td><b>#${x.number||'?'}</b> <span style="color:var(--grey);font-size:.75rem">${x.channel_name}</span></td>
+        <td><span class="badge ${tc[typeKey]||'badge-grey'}">${x.type}</span></td>
+        <td><span class="badge ${pc[prio]||'badge-grey'}">${pe[prio]||''} ${prio}</span></td>
+        <td>${x.opener}</td>
+        <td style="color:${x.claimed_by?'var(--green)':'var(--grey)'}">${x.claimed_by||'—'}</td>
+        <td style="color:var(--grey);font-size:.75rem">${date}</td>
+        <td>${actions}</td>
+      </tr>`;
+    }).join('');
+  }catch(e){}
 }
 async function closeTicket(id,name){openModal('Fermer ticket',`Fermer #${name} ?`,async()=>{await apiPost(`/api/${GUILD_ID}/tickets/${id}/close`);toast('✅ Ticket fermé');loadTickets();});}
+
+async function loadShadowban(){
+  const tb=document.getElementById('shadowban-tbody');
+  tb.innerHTML='<tr><td colspan="4"><div class="empty"><div class="loader"></div></div></td></tr>';
+  try{
+    const d=await apiGet(`/api/${GUILD_ID}/security/shadowbans`);
+    const list=d.shadowbans||[];
+    if(!list.length){tb.innerHTML='<tr><td colspan="4"><div class="empty"><div style="font-size:2rem">👻</div><p>Aucun shadowban actif</p></div></td></tr>';return;}
+    tb.innerHTML=list.map(x=>`<tr>
+      <td><div style="display:flex;align-items:center;gap:.6rem">${x.avatar?`<img src="${x.avatar}" style="width:28px;height:28px;border-radius:50%">`:''}<span>${x.member_name}</span></div></td>
+      <td style="color:var(--grey)">${x.reason}</td>
+      <td style="color:var(--grey);font-size:.75rem">${x.date}</td>
+      <td><button class="btn btn-danger" onclick="unshadowban('${x.member_id}','${x.member_name}')">Lever</button></td>
+    </tr>`).join('');
+  }catch(e){}
+}
+async function unshadowban(id,name){openModal('Lever le shadowban',`Lever le shadowban de ${name} ?`,async()=>{await apiDelete(`/api/${GUILD_ID}/security/shadowbans/${id}`);toast('✅ Shadowban levé');loadShadowban();});}
+
+async function loadWatchlist(){
+  const tb=document.getElementById('watchlist-tbody');
+  tb.innerHTML='<tr><td colspan="5"><div class="empty"><div class="loader"></div></div></td></tr>';
+  try{
+    const d=await apiGet(`/api/${GUILD_ID}/security/watchlist`);
+    const list=d.watchlist||[];
+    if(!list.length){tb.innerHTML='<tr><td colspan="5"><div class="empty"><div style="font-size:2rem">👁️</div><p>Aucun membre en watchlist</p></div></td></tr>';return;}
+    tb.innerHTML=list.map(x=>`<tr>
+      <td><div style="display:flex;align-items:center;gap:.6rem">${x.avatar?`<img src="${x.avatar}" style="width:28px;height:28px;border-radius:50%">`:''}<span>${x.member_name}</span></div></td>
+      <td style="color:var(--grey)">${x.reason}</td>
+      <td style="color:var(--grey)">${x.by_name}</td>
+      <td style="color:var(--grey);font-size:.75rem">${x.date}</td>
+      <td><button class="btn btn-danger" onclick="unwatch('${x.member_id}','${x.member_name}')">Retirer</button></td>
+    </tr>`).join('');
+  }catch(e){}
+}
+async function unwatch(id,name){openModal('Retirer de la watchlist',`Retirer ${name} de la surveillance ?`,async()=>{await apiDelete(`/api/${GUILD_ID}/security/watchlist/${id}`);toast('✅ Retiré de la watchlist');loadWatchlist();});}
+
+async function loadReports(){
+  const tb=document.getElementById('reports-tbody');
+  tb.innerHTML='<tr><td colspan="4"><div class="empty"><div class="loader"></div></div></td></tr>';
+  try{
+    const d=await apiGet(`/api/${GUILD_ID}/security/reports`);
+    const list=(d.reports||[]).slice().reverse();
+    if(!list.length){tb.innerHTML='<tr><td colspan="4"><div class="empty"><div style="font-size:2rem">🚨</div><p>Aucun signalement</p></div></td></tr>';return;}
+    tb.innerHTML=list.map(x=>`<tr>
+      <td><b>${x.target_name}</b></td>
+      <td style="color:var(--grey)">${x.reporter_name}</td>
+      <td>${x.reason}</td>
+      <td style="color:var(--grey);font-size:.75rem">${(x.date||'').slice(0,16).replace('T',' ')}</td>
+    </tr>`).join('');
+  }catch(e){}
+}
 
 async function loadRoles(){
   const tb=document.getElementById('roles-tbody');

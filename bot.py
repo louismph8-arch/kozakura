@@ -2091,6 +2091,7 @@ async def open_ticket(interaction: discord.Interaction, ticket_type: str):
         "status":      "open",
         "claimed_by":  None,
         "opened_at":   str(datetime.utcnow()),
+        "priority":    "normale",
     }
     save_json("tickets.json", tickets_db)
 
@@ -2221,9 +2222,55 @@ class CloseTicketModal(discord.ui.Modal, title="Fermer le ticket"):
 
         await asyncio.sleep(10)
         try:
+            await _save_ticket_transcript(guild, channel, data)
             await ai_summarize_ticket(guild, channel, data)
             await channel.delete()
         except Exception: pass
+
+@bot.command(name="setpriority")
+@commands.has_permissions(kick_members=True)
+async def setpriority(ctx, niveau: str = None):
+    """!setpriority [urgent/haute/normale/basse] — Définit la priorité du ticket"""
+    gid = str(ctx.guild.id); tid = str(ctx.channel.id)
+    if gid not in tickets_db or tid not in tickets_db[gid]:
+        return await ctx.send("❌ Cette commande s'utilise dans un salon de ticket.", delete_after=5)
+    if niveau not in TICKET_PRIORITY_COLORS:
+        return await ctx.send(f"❌ Niveaux valides : `urgent` / `haute` / `normale` / `basse`", delete_after=5)
+    tickets_db[gid][tid]["priority"] = niveau
+    save_json("tickets.json", tickets_db)
+    emoji = TICKET_PRIORITY_EMOJI[niveau]
+    color = TICKET_PRIORITY_COLORS[niveau]
+    e = discord.Embed(
+        title=f"{emoji} Priorité mise à jour",
+        description=f"Ce ticket est maintenant en priorité **{niveau.upper()}**",
+        color=color, timestamp=datetime.utcnow()
+    )
+    await ctx.send(embed=e)
+    await ctx.channel.edit(name=f"{niveau}-{ctx.channel.name.split('-', 1)[-1] if '-' in ctx.channel.name else ctx.channel.name}")
+
+@bot.command(name="reopen")
+@commands.has_permissions(kick_members=True)
+async def reopen_ticket(ctx):
+    """!reopen — Rouvre un ticket fermé"""
+    gid = str(ctx.guild.id); tid = str(ctx.channel.id)
+    if gid not in tickets_db or tid not in tickets_db[gid]:
+        return await ctx.send("❌ Cette commande s'utilise dans un salon de ticket.", delete_after=5)
+    data = tickets_db[gid][tid]
+    if data.get("status") == "open":
+        return await ctx.send("❌ Ce ticket est déjà ouvert.", delete_after=5)
+    tickets_db[gid][tid]["status"] = "open"
+    tickets_db[gid][tid].pop("closed_by", None)
+    tickets_db[gid][tid].pop("closed_at", None)
+    tickets_db[gid][tid].pop("close_reason", None)
+    save_json("tickets.json", tickets_db)
+    e = discord.Embed(
+        title="🔓 Ticket Rouvert",
+        description=f"Ticket #{data['number']} rouvert par {ctx.author.mention}",
+        color=discord.Color.green(), timestamp=datetime.utcnow()
+    )
+    await ctx.send(embed=e, view=TicketControlView())
+    await log_ticket(ctx.guild, e)
+
 @bot.command()
 @commands.has_permissions(kick_members=True)
 async def claim(ctx):
@@ -2556,6 +2603,8 @@ async def help(ctx, categorie: str = None):
             e.add_field(name="!add @membre",                   value="Ajouter un membre au ticket", inline=False)
             e.add_field(name="!remove @membre",                value="Retirer un membre du ticket", inline=False)
             e.add_field(name="!closeticket [raison]",          value="Fermer le ticket actuel", inline=False)
+            e.add_field(name="!setpriority [urgent/haute/normale/basse]", value="Définir la priorité du ticket", inline=False)
+            e.add_field(name="!reopen",                        value="Rouvrir un ticket fermé", inline=False)
             e.add_field(name="!setticketcategory [nom]",       value="Définit la catégorie des tickets (admin)", inline=False)
             e.add_field(name="!setticketlog #salon",           value="Définit le salon de logs tickets (admin)", inline=False)
 
@@ -5744,6 +5793,51 @@ async def histoire(ctx):
     e.set_footer(text=f"Kozakura IA • {ctx.guild.name}")
     await ctx.send(embed=e)
 
+# ─── TRANSCRIPT TICKET ───────────────────────────────────────────────────────
+async def _save_ticket_transcript(guild, channel, ticket_data):
+    """Génère un transcript texte du ticket et l'envoie dans les logs"""
+    try:
+        import io
+        lines = [
+            f"═══════════════════════════════════════════════════",
+            f"  TRANSCRIPT — Ticket #{ticket_data.get('number', '?')}",
+            f"  Serveur   : {guild.name}",
+            f"  Type      : {ticket_data.get('type', '?').capitalize()}",
+            f"  Auteur    : {ticket_data.get('author_name', '?')}",
+            f"  Ouvert le : {ticket_data.get('opened_at', '?')[:16]}",
+            f"  Fermé le  : {ticket_data.get('closed_at', '?')[:16]}",
+            f"  Raison    : {ticket_data.get('close_reason', '?')}",
+            f"═══════════════════════════════════════════════════",
+            "",
+        ]
+        msgs = []
+        async for msg in channel.history(limit=500, oldest_first=True):
+            ts = msg.created_at.strftime("%d/%m/%Y %H:%M")
+            content = msg.content or "[média/embed]"
+            msgs.append(f"[{ts}] {msg.author.display_name}: {content}")
+        lines.extend(msgs)
+        content_str = "\n".join(lines)
+
+        log_ch_id = get_cfg(guild.id, "ticket_log_channel")
+        if log_ch_id:
+            log_ch = guild.get_channel(int(log_ch_id))
+            if log_ch:
+                buf = io.BytesIO(content_str.encode("utf-8"))
+                fname = f"transcript-ticket-{ticket_data.get('number','?')}.txt"
+                e = discord.Embed(
+                    title=f"📄 Transcript — Ticket #{ticket_data.get('number','?')}",
+                    description=(
+                        f"**Type :** {ticket_data.get('type','?').capitalize()}\n"
+                        f"**Auteur :** {ticket_data.get('author_name','?')}\n"
+                        f"**Messages :** {len(msgs)}"
+                    ),
+                    color=discord.Color.blurple(), timestamp=datetime.utcnow()
+                )
+                e.set_footer(text="Kozakura • Transcript automatique")
+                await log_ch.send(embed=e, file=discord.File(buf, filename=fname))
+    except Exception:
+        pass
+
 # ─── RÉSUMÉ AUTOMATIQUE À LA FERMETURE DES TICKETS ───────────────────────────
 async def ai_summarize_ticket(guild, channel, ticket_data):
     """Résume automatiquement un ticket à sa fermeture"""
@@ -5786,9 +5880,6 @@ async def ai_summarize_ticket(guild, channel, ticket_data):
                 e.add_field(name="Auteur", value=ticket_data.get('author_name', '?'))
                 e.set_footer(text="Résumé automatique par Kozakura AI")
                 await log_ch.send(embed=e)
-    except Exception:
-        pass  # Ignoré intentionnellement
-
     except Exception:
         pass  # Ignoré intentionnellement
 
@@ -6277,19 +6368,31 @@ def api_tickets(guild_id):
     guild = bot.get_guild(int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
     gid   = str(guild.id)
+    status_filter = request.args.get("status", "open")
     result = []
     for ch_id, tdata in tickets_db.get(gid, {}).items():
+        if status_filter != "all" and tdata.get("status", "open") != status_filter:
+            continue
         ch = guild.get_channel(int(ch_id))
-        opener = guild.get_member(tdata.get("opener_id", 0))
+        author_id = tdata.get("author_id") or tdata.get("opener_id", 0)
+        opener = guild.get_member(int(author_id)) if author_id else None
+        claimer_id = tdata.get("claimed_by")
+        claimer = guild.get_member(int(claimer_id)) if claimer_id else None
         result.append({
-            "channel_id":   ch_id,
-            "channel_name": ch.name if ch else f"ticket-{ch_id}",
-            "type":         tdata.get("type", "inconnu"),
-            "opener":       opener.display_name if opener else "inconnu",
-            "opener_id":    str(tdata.get("opener_id", 0)),
-            "claimed_by":   str(tdata.get("claimed_by", "")),
-            "opened_at":    tdata.get("opened_at", "")
+            "channel_id":    ch_id,
+            "channel_name":  ch.name if ch else f"ticket-{ch_id}",
+            "type":          tdata.get("type", "inconnu"),
+            "opener":        opener.display_name if opener else tdata.get("author_name", "inconnu"),
+            "opener_id":     str(author_id),
+            "claimed_by":    claimer.display_name if claimer else "",
+            "opened_at":     tdata.get("opened_at", ""),
+            "closed_at":     tdata.get("closed_at", ""),
+            "close_reason":  tdata.get("close_reason", ""),
+            "priority":      tdata.get("priority", "normale"),
+            "status":        tdata.get("status", "open"),
+            "number":        tdata.get("number", "?"),
         })
+    result.sort(key=lambda x: x.get("opened_at", ""), reverse=True)
     return jsonify({"tickets": result})
 
 @app_flask.route("/api/<guild_id>/tickets/<channel_id>/close", methods=["POST"])
@@ -6297,18 +6400,91 @@ def api_close_ticket(guild_id, channel_id):
     if not check_auth(): return api_error("Non autorisé")
     guild = bot.get_guild(int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
-    ch = guild.get_channel(int(channel_id))
-    if not ch: return api_error("Salon introuvable", 404)
+    gid = str(guild.id)
 
     async def do_close():
-        await ch.delete(reason="Fermé depuis le dashboard")
-        gid = str(guild.id)
-        if channel_id in tickets_db.get(gid, {}):
-            del tickets_db[gid][channel_id]
+        ch = guild.get_channel(int(channel_id))
+        if ch:
+            data = tickets_db.get(gid, {}).get(channel_id, {})
+            tickets_db.setdefault(gid, {})[channel_id] = {
+                **data,
+                "status": "closed",
+                "closed_by": "dashboard",
+                "closed_at": str(datetime.utcnow()),
+                "close_reason": "Fermé depuis le dashboard",
+            }
             save_json("tickets.json", tickets_db)
+            await _save_ticket_transcript(guild, ch, tickets_db[gid][channel_id])
+            await ch.delete(reason="Fermé depuis le dashboard")
 
     asyncio.run_coroutine_threadsafe(do_close(), bot.loop)
     return jsonify({"status": "ok"})
+
+# ── Sécurité : Shadowban ───────────────────────────────────────────────────────
+@app_flask.route("/api/<guild_id>/security/shadowbans")
+def api_shadowbans(guild_id):
+    if not check_auth(): return api_error("Non autorisé")
+    guild = bot.get_guild(int(guild_id))
+    if not guild: return api_error("Serveur introuvable", 404)
+    gid = str(guild.id)
+    result = []
+    for uid, data in shadowban_db.get(gid, {}).items():
+        member = guild.get_member(int(uid))
+        result.append({
+            "member_id":   uid,
+            "member_name": member.display_name if member else f"ID:{uid}",
+            "avatar":      str(member.display_avatar.url) if member else None,
+            "reason":      data.get("reason", "?"),
+            "by":          data.get("by", "?"),
+            "date":        data.get("date", "?")[:16],
+        })
+    return jsonify({"shadowbans": result})
+
+@app_flask.route("/api/<guild_id>/security/shadowbans/<member_id>", methods=["DELETE"])
+def api_unshadowban(guild_id, member_id):
+    if not check_auth(): return api_error("Non autorisé")
+    gid = str(guild_id)
+    if member_id in shadowban_db.get(gid, {}):
+        shadowban_db[gid].pop(member_id)
+        save_json("shadowban.json", shadowban_db)
+    return jsonify({"status": "ok"})
+
+# ── Sécurité : Watchlist ──────────────────────────────────────────────────────
+@app_flask.route("/api/<guild_id>/security/watchlist")
+def api_watchlist(guild_id):
+    if not check_auth(): return api_error("Non autorisé")
+    guild = bot.get_guild(int(guild_id))
+    if not guild: return api_error("Serveur introuvable", 404)
+    gid = str(guild.id)
+    result = []
+    for uid, data in watchlist_db.get(gid, {}).items():
+        member = guild.get_member(int(uid))
+        result.append({
+            "member_id":   uid,
+            "member_name": member.display_name if member else f"ID:{uid}",
+            "avatar":      str(member.display_avatar.url) if member else None,
+            "reason":      data.get("reason", "?"),
+            "by_name":     data.get("by_name", "?"),
+            "date":        data.get("date", "?")[:16],
+        })
+    return jsonify({"watchlist": result})
+
+@app_flask.route("/api/<guild_id>/security/watchlist/<member_id>", methods=["DELETE"])
+def api_unwatch(guild_id, member_id):
+    if not check_auth(): return api_error("Non autorisé")
+    gid = str(guild_id)
+    if member_id in watchlist_db.get(gid, {}):
+        watchlist_db[gid].pop(member_id)
+        save_json("watchlist.json", watchlist_db)
+    return jsonify({"status": "ok"})
+
+# ── Sécurité : Signalements ───────────────────────────────────────────────────
+@app_flask.route("/api/<guild_id>/security/reports")
+def api_reports(guild_id):
+    if not check_auth(): return api_error("Non autorisé")
+    gid = str(guild_id)
+    data = reports_db.get(gid, [])
+    return jsonify({"reports": data[-50:]})
 
 # ── XP / Niveaux ──────────────────────────────────────────────────────────────
 @app_flask.route("/api/<guild_id>/xp")
