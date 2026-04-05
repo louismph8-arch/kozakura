@@ -6755,8 +6755,8 @@ async def dashboard_log_leave(member):
     if len(dashboard_logs) > 200: dashboard_logs.pop(0)
 
 @app_flask.route("/api/<guild_id>/logs")
-def api_logs(_guild_id):
-    """Retourne les logs temps réel (guild_id non utilisé — logs globaux)"""
+def api_logs(guild_id):
+    """Retourne les logs temps réel"""
     if not check_auth(): return api_error("Non autorisé")
     return jsonify({"logs": list(reversed(dashboard_logs[-50:]))})
 
