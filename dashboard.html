@@ -5,208 +5,370 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Kozakura — Dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-:root{--pink:#FF2D78;--pink2:#FF6BA8;--gold:#FFD166;--dark:#080810;--dark2:#0e0e1a;--dark3:#13131f;--dark4:#1a1a2e;--white:#f5f0ff;--grey:#6b6b8a;--green:#06d6a0;--red:#ef233c;--sidebar-w:240px;}
+:root{
+  --pink:#FF2D78;--pink2:#FF6BA8;--pink3:rgba(255,45,120,.06);
+  --gold:#FFD166;--dark:#06060f;--dark2:#0b0b18;--dark3:#101020;--dark4:#161628;
+  --white:#f0eeff;--grey:#5a5a7a;--grey2:#8888aa;--green:#06d6a0;--red:#ef233c;
+  --blue:#5865F2;--sidebar-w:260px;
+  --glass:rgba(255,255,255,.03);--glass-border:rgba(255,255,255,.06);
+  --shadow:0 8px 32px rgba(0,0,0,.4);
+}
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box;}
+html{scroll-behavior:smooth;}
 body{background:var(--dark);color:var(--white);font-family:'DM Sans',sans-serif;display:flex;min-height:100vh;overflow-x:hidden;}
-#login-screen{position:fixed;inset:0;background:var(--dark);display:flex;align-items:center;justify-content:center;z-index:999;}
-.login-box{background:var(--dark3);border:1px solid rgba(255,45,120,.2);border-radius:12px;padding:3rem;width:380px;text-align:center;}
-.login-box h1{font-family:'Bebas Neue',sans-serif;font-size:2.5rem;letter-spacing:3px;margin-bottom:.3rem;}
-.login-box h1 span{color:var(--pink);}
-.login-box p{color:var(--grey);font-size:.9rem;margin-bottom:2rem;}
-.login-input{width:100%;background:var(--dark2);border:1px solid rgba(255,255,255,.1);border-radius:6px;padding:.8rem 1rem;color:var(--white);font-family:'DM Sans',sans-serif;font-size:.9rem;outline:none;transition:border .3s;margin-top:.6rem;}
-.login-input:focus{border-color:var(--pink);}
-.login-btn{width:100%;margin-top:1.2rem;background:var(--pink);border:none;border-radius:6px;padding:.9rem;color:#fff;font-family:'Syne',sans-serif;font-weight:700;font-size:.85rem;letter-spacing:2px;text-transform:uppercase;cursor:pointer;transition:all .3s;}
-.login-btn:hover{background:var(--pink2);}
-.login-error{color:var(--red);font-size:.8rem;margin-top:.5rem;display:none;}
-#app{display:flex;width:100%;opacity:0;pointer-events:none;transition:opacity .4s;}
+::-webkit-scrollbar{width:4px;height:4px;}
+::-webkit-scrollbar-track{background:transparent;}
+::-webkit-scrollbar-thumb{background:rgba(255,45,120,.3);border-radius:2px;}
+
+/* ── LOGIN ── */
+#login-screen{
+  position:fixed;inset:0;background:var(--dark);display:flex;align-items:center;justify-content:center;z-index:999;
+  background-image:radial-gradient(ellipse at 20% 50%,rgba(255,45,120,.08) 0%,transparent 50%),
+                   radial-gradient(ellipse at 80% 20%,rgba(88,101,242,.06) 0%,transparent 50%);
+}
+.login-wrap{display:flex;flex-direction:column;align-items:center;gap:2rem;width:100%;max-width:420px;padding:2rem;}
+.login-logo{font-family:'Bebas Neue',sans-serif;font-size:3.5rem;letter-spacing:6px;text-align:center;line-height:1;}
+.login-logo span{color:var(--pink);}
+.login-logo small{display:block;font-family:'DM Sans',sans-serif;font-size:.75rem;letter-spacing:4px;text-transform:uppercase;color:var(--grey2);margin-top:.3rem;}
+.login-card{width:100%;background:rgba(16,16,32,.8);backdrop-filter:blur(20px);border:1px solid rgba(255,45,120,.15);border-radius:16px;padding:2.5rem;box-shadow:0 24px 80px rgba(0,0,0,.5),0 0 0 1px rgba(255,255,255,.03);}
+.login-field{margin-bottom:1rem;}
+.login-field label{display:block;font-size:.65rem;letter-spacing:2px;text-transform:uppercase;color:var(--grey2);font-family:'Syne',sans-serif;font-weight:600;margin-bottom:.5rem;}
+.login-field input{width:100%;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:.85rem 1rem;color:var(--white);font-family:'DM Sans',sans-serif;font-size:.9rem;outline:none;transition:all .3s;}
+.login-field input:focus{border-color:rgba(255,45,120,.5);background:rgba(255,45,120,.05);box-shadow:0 0 0 3px rgba(255,45,120,.08);}
+.login-btn{width:100%;margin-top:1.5rem;background:linear-gradient(135deg,var(--pink),var(--pink2));border:none;border-radius:8px;padding:1rem;color:#fff;font-family:'Syne',sans-serif;font-weight:700;font-size:.8rem;letter-spacing:3px;text-transform:uppercase;cursor:pointer;transition:all .3s;position:relative;overflow:hidden;}
+.login-btn::before{content:'';position:absolute;inset:0;background:linear-gradient(135deg,rgba(255,255,255,.1),transparent);opacity:0;transition:.3s;}
+.login-btn:hover::before{opacity:1;}
+.login-btn:hover{transform:translateY(-1px);box-shadow:0 8px 24px rgba(255,45,120,.4);}
+.login-btn:active{transform:translateY(0);}
+.login-error{color:var(--red);font-size:.8rem;margin-top:.8rem;text-align:center;display:none;padding:.6rem;background:rgba(239,35,60,.08);border-radius:6px;border:1px solid rgba(239,35,60,.15);}
+.login-divider{display:flex;align-items:center;gap:1rem;margin:1.5rem 0;color:var(--grey);font-size:.75rem;}
+.login-divider::before,.login-divider::after{content:'';flex:1;height:1px;background:rgba(255,255,255,.06);}
+
+/* ── APP ── */
+#app{display:flex;width:100%;opacity:0;pointer-events:none;transition:opacity .5s;}
 #app.visible{opacity:1;pointer-events:all;}
-.sidebar{width:var(--sidebar-w);min-height:100vh;background:var(--dark2);border-right:1px solid rgba(255,255,255,.05);display:flex;flex-direction:column;position:fixed;left:0;top:0;bottom:0;z-index:50;overflow-y:auto;}
-.sidebar-logo{padding:1.5rem 1.5rem 1rem;border-bottom:1px solid rgba(255,255,255,.05);}
-.sidebar-logo h2{font-family:'Bebas Neue',sans-serif;font-size:1.6rem;letter-spacing:3px;}
-.sidebar-logo h2 span{color:var(--pink);}
-.sidebar-logo small{color:var(--grey);font-size:.7rem;display:block;margin-top:.2rem;}
-.nav-section{padding:.6rem 1.5rem .2rem;font-size:.6rem;letter-spacing:2px;text-transform:uppercase;color:var(--grey);font-family:'Syne',sans-serif;font-weight:600;}
-.nav-item{display:flex;align-items:center;gap:.8rem;padding:.7rem 1.5rem;cursor:pointer;color:var(--grey);font-size:.85rem;transition:all .2s;border-left:3px solid transparent;}
+
+/* ── SIDEBAR ── */
+.sidebar{
+  width:var(--sidebar-w);min-height:100vh;
+  background:rgba(11,11,24,.95);
+  backdrop-filter:blur(20px);
+  border-right:1px solid var(--glass-border);
+  display:flex;flex-direction:column;
+  position:fixed;left:0;top:0;bottom:0;z-index:50;overflow-y:auto;
+}
+.sidebar-logo{padding:1.8rem 1.5rem 1.5rem;border-bottom:1px solid var(--glass-border);display:flex;align-items:center;gap:.8rem;}
+.sidebar-logo-icon{width:38px;height:38px;background:linear-gradient(135deg,var(--pink),var(--pink2));border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0;box-shadow:0 4px 12px rgba(255,45,120,.3);}
+.sidebar-logo-text h2{font-family:'Bebas Neue',sans-serif;font-size:1.3rem;letter-spacing:3px;line-height:1;}
+.sidebar-logo-text h2 span{color:var(--pink);}
+.sidebar-logo-text small{color:var(--grey2);font-size:.65rem;letter-spacing:1px;display:block;margin-top:.15rem;}
+.nav-section{padding:.8rem 1.5rem .3rem;font-size:.55rem;letter-spacing:3px;text-transform:uppercase;color:var(--grey);font-family:'Syne',sans-serif;font-weight:700;}
+.nav-item{
+  display:flex;align-items:center;gap:.75rem;
+  padding:.65rem 1.5rem;cursor:pointer;
+  color:var(--grey2);font-size:.82rem;font-weight:500;
+  transition:all .2s;border-left:2px solid transparent;
+  position:relative;
+}
 .nav-item:hover{color:var(--white);background:rgba(255,255,255,.03);}
-.nav-item.active{color:var(--pink);background:rgba(255,45,120,.08);border-left-color:var(--pink);}
-.sidebar-footer{padding:1rem 1.5rem;border-top:1px solid rgba(255,255,255,.05);margin-top:auto;}
-.ping-badge{display:flex;align-items:center;gap:.5rem;font-size:.75rem;color:var(--grey);}
-.ping-dot{width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 2s infinite;}
-@keyframes pulse{0%,100%{opacity:1;}50%{opacity:.4;}}
-.main{margin-left:var(--sidebar-w);flex:1;padding:2rem;min-height:100vh;}
-.page{display:none;}.page.active{display:block;}
-.page-header{margin-bottom:2rem;}
-.page-header h1{font-family:'Bebas Neue',sans-serif;font-size:2.5rem;letter-spacing:2px;}
-.page-header h1 span{color:var(--pink);}
-.page-header p{color:var(--grey);font-size:.9rem;margin-top:.3rem;}
-.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:1rem;margin-bottom:2rem;}
-.stat-card{background:var(--dark3);border:1px solid rgba(255,255,255,.06);border-radius:8px;padding:1.5rem;transition:border .3s;position:relative;overflow:hidden;}
-.stat-card:hover{border-color:rgba(255,45,120,.2);}
-.stat-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--pink);transform:scaleX(0);transition:.3s;transform-origin:left;}
-.stat-card:hover::before{transform:scaleX(1);}
-.stat-card .label{font-size:.65rem;letter-spacing:2px;text-transform:uppercase;color:var(--grey);font-family:'Syne',sans-serif;margin-bottom:.5rem;}
-.stat-card .value{font-family:'Bebas Neue',sans-serif;font-size:2.5rem;line-height:1;}
-.stat-card .value.pink{color:var(--pink);}.stat-card .value.gold{color:var(--gold);}.stat-card .value.green{color:var(--green);}
-.table-wrap{background:var(--dark3);border:1px solid rgba(255,255,255,.06);border-radius:8px;overflow:hidden;margin-bottom:1.5rem;}
-.table-header{padding:1rem 1.5rem;border-bottom:1px solid rgba(255,255,255,.05);display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;}
-.table-title{font-family:'Syne',sans-serif;font-weight:700;font-size:.9rem;}
-.search-input{background:var(--dark2);border:1px solid rgba(255,255,255,.08);border-radius:6px;padding:.5rem 1rem;color:var(--white);font-size:.8rem;outline:none;width:200px;transition:border .3s;}
-.search-input:focus{border-color:var(--pink);}
+.nav-item.active{color:var(--pink);background:rgba(255,45,120,.07);border-left-color:var(--pink);}
+.nav-item .nav-icon{font-size:1rem;width:20px;text-align:center;flex-shrink:0;}
+.sidebar-footer{padding:1.2rem 1.5rem;border-top:1px solid var(--glass-border);margin-top:auto;}
+.status-bar{display:flex;align-items:center;justify-content:space-between;}
+.ping-badge{display:flex;align-items:center;gap:.5rem;font-size:.75rem;color:var(--grey2);}
+.ping-dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green);animation:glow 2s infinite;}
+@keyframes glow{0%,100%{opacity:1;transform:scale(1);}50%{opacity:.6;transform:scale(.8);}}
+.sidebar-version{font-size:.6rem;color:var(--grey);font-family:'DM Mono',monospace;}
+
+/* ── MAIN ── */
+.main{margin-left:var(--sidebar-w);flex:1;padding:2.5rem;min-height:100vh;background:var(--dark);
+  background-image:radial-gradient(ellipse at 100% 0%,rgba(255,45,120,.04) 0%,transparent 50%);}
+.page{display:none;animation:fadeIn .3s ease;}
+.page.active{display:block;}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:none;}}
+
+/* ── PAGE HEADER ── */
+.page-header{margin-bottom:2.5rem;display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:1rem;}
+.page-header-left h1{font-family:'Bebas Neue',sans-serif;font-size:2.2rem;letter-spacing:2px;line-height:1;}
+.page-header-left h1 span{color:var(--pink);}
+.page-header-left p{color:var(--grey2);font-size:.85rem;margin-top:.3rem;}
+
+/* ── STAT CARDS ── */
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1rem;margin-bottom:2rem;}
+.stat-card{
+  background:var(--dark3);
+  border:1px solid var(--glass-border);
+  border-radius:12px;padding:1.5rem;
+  transition:all .3s;position:relative;overflow:hidden;cursor:default;
+}
+.stat-card::after{content:'';position:absolute;inset:0;background:linear-gradient(135deg,rgba(255,45,120,.04),transparent);opacity:0;transition:.3s;}
+.stat-card:hover{border-color:rgba(255,45,120,.2);transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.3);}
+.stat-card:hover::after{opacity:1;}
+.stat-card .s-icon{font-size:1.5rem;margin-bottom:.8rem;display:block;}
+.stat-card .s-label{font-size:.6rem;letter-spacing:2.5px;text-transform:uppercase;color:var(--grey);font-family:'Syne',sans-serif;font-weight:700;margin-bottom:.4rem;}
+.stat-card .s-value{font-family:'Bebas Neue',sans-serif;font-size:2.2rem;line-height:1;color:var(--white);}
+.stat-card .s-value.pink{color:var(--pink);}
+.stat-card .s-value.gold{color:var(--gold);}
+.stat-card .s-value.green{color:var(--green);}
+.stat-accent{position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,var(--pink),var(--pink2));transform:scaleX(0);transition:.3s;transform-origin:left;}
+.stat-card:hover .stat-accent{transform:scaleX(1);}
+
+/* ── TABLE ── */
+.table-wrap{background:var(--dark3);border:1px solid var(--glass-border);border-radius:12px;overflow:hidden;margin-bottom:1.5rem;}
+.table-header{
+  padding:1.2rem 1.5rem;border-bottom:1px solid var(--glass-border);
+  display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;
+  background:rgba(255,255,255,.01);
+}
+.table-title{font-family:'Syne',sans-serif;font-weight:700;font-size:.85rem;letter-spacing:.5px;}
+.search-wrap{position:relative;}
+.search-wrap::before{content:'🔍';position:absolute;left:.8rem;top:50%;transform:translateY(-50%);font-size:.75rem;pointer-events:none;}
+.search-input{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);border-radius:8px;padding:.5rem 1rem .5rem 2.2rem;color:var(--white);font-size:.8rem;outline:none;width:200px;transition:all .3s;font-family:'DM Sans',sans-serif;}
+.search-input:focus{border-color:rgba(255,45,120,.4);background:rgba(255,45,120,.04);width:240px;}
 table{width:100%;border-collapse:collapse;}
-th{padding:.8rem 1rem;text-align:left;font-size:.65rem;letter-spacing:1.5px;text-transform:uppercase;color:var(--grey);font-family:'Syne',sans-serif;border-bottom:1px solid rgba(255,255,255,.05);}
-td{padding:.8rem 1rem;font-size:.85rem;border-bottom:1px solid rgba(255,255,255,.03);vertical-align:middle;}
-tr:last-child td{border-bottom:none;}tr:hover td{background:rgba(255,255,255,.02);}
-.member-cell{display:flex;align-items:center;gap:.7rem;}
-.avatar-placeholder{width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,var(--pink),var(--pink2));display:flex;align-items:center;justify-content:center;font-size:.75rem;font-weight:700;color:#fff;flex-shrink:0;}
-.badge{display:inline-block;padding:.2rem .6rem;border-radius:999px;font-size:.65rem;font-family:'Syne',sans-serif;font-weight:600;letter-spacing:1px;text-transform:uppercase;}
-.badge-red{background:rgba(239,35,60,.15);color:var(--red);}.badge-green{background:rgba(6,214,160,.15);color:var(--green);}
-.badge-yellow{background:rgba(255,209,102,.15);color:var(--gold);}.badge-pink{background:rgba(255,45,120,.15);color:var(--pink);}
-.badge-grey{background:rgba(107,107,138,.15);color:var(--grey);}.badge-orange{background:rgba(255,149,0,.15);color:#ff9500;}
-.btn{display:inline-flex;align-items:center;gap:.4rem;padding:.45rem .9rem;border-radius:5px;font-size:.75rem;font-family:'Syne',sans-serif;font-weight:600;letter-spacing:1px;cursor:pointer;border:none;transition:all .2s;text-transform:uppercase;}
-.btn-danger{background:rgba(239,35,60,.15);color:var(--red);}.btn-danger:hover{background:var(--red);color:#fff;}
-.btn-warn{background:rgba(255,209,102,.15);color:var(--gold);}.btn-warn:hover{background:var(--gold);color:#000;}
-.btn-primary{background:var(--pink);color:#fff;}.btn-primary:hover{background:var(--pink2);}
-.btn-ghost{background:rgba(255,255,255,.05);color:var(--white);}.btn-ghost:hover{background:rgba(255,255,255,.1);}
-.btn-green{background:rgba(6,214,160,.15);color:var(--green);}.btn-green:hover{background:var(--green);color:#000;}
-.btn-blue{background:rgba(88,101,242,.2);color:#7289da;}.btn-blue:hover{background:#7289da;color:#fff;}
-.form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1rem;margin-top:1rem;}
+th{padding:.9rem 1.2rem;text-align:left;font-size:.6rem;letter-spacing:2px;text-transform:uppercase;color:var(--grey);font-family:'Syne',sans-serif;font-weight:700;border-bottom:1px solid var(--glass-border);}
+td{padding:.85rem 1.2rem;font-size:.83rem;border-bottom:1px solid rgba(255,255,255,.025);vertical-align:middle;}
+tr:last-child td{border-bottom:none;}
+tr:hover td{background:rgba(255,255,255,.015);}
+.member-cell{display:flex;align-items:center;gap:.75rem;}
+.avatar{width:34px;height:34px;border-radius:50%;object-fit:cover;border:1px solid var(--glass-border);}
+.avatar-placeholder{width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,var(--pink),var(--pink2));display:flex;align-items:center;justify-content:center;font-size:.75rem;font-weight:700;color:#fff;flex-shrink:0;}
+.member-name{font-weight:500;}
+.member-tag{font-size:.72rem;color:var(--grey2);}
+
+/* ── BADGES ── */
+.badge{display:inline-flex;align-items:center;gap:.3rem;padding:.22rem .65rem;border-radius:999px;font-size:.62rem;font-family:'Syne',sans-serif;font-weight:700;letter-spacing:.8px;text-transform:uppercase;}
+.badge-red{background:rgba(239,35,60,.12);color:#ff6b7a;border:1px solid rgba(239,35,60,.15);}
+.badge-green{background:rgba(6,214,160,.12);color:#06d6a0;border:1px solid rgba(6,214,160,.15);}
+.badge-yellow{background:rgba(255,209,102,.12);color:#ffd166;border:1px solid rgba(255,209,102,.15);}
+.badge-pink{background:rgba(255,45,120,.12);color:#ff6ba8;border:1px solid rgba(255,45,120,.15);}
+.badge-grey{background:rgba(255,255,255,.06);color:var(--grey2);border:1px solid rgba(255,255,255,.08);}
+.badge-orange{background:rgba(255,149,0,.12);color:#ff9500;border:1px solid rgba(255,149,0,.15);}
+.badge-blue{background:rgba(88,101,242,.12);color:#7b8ff7;border:1px solid rgba(88,101,242,.15);}
+
+/* ── BUTTONS ── */
+.btn{display:inline-flex;align-items:center;gap:.4rem;padding:.45rem 1rem;border-radius:7px;font-size:.72rem;font-family:'Syne',sans-serif;font-weight:700;letter-spacing:.8px;cursor:pointer;border:1px solid transparent;transition:all .2s;text-transform:uppercase;white-space:nowrap;}
+.btn-danger{background:rgba(239,35,60,.1);color:#ff6b7a;border-color:rgba(239,35,60,.15);}
+.btn-danger:hover{background:var(--red);color:#fff;border-color:var(--red);transform:translateY(-1px);}
+.btn-warn{background:rgba(255,209,102,.1);color:var(--gold);border-color:rgba(255,209,102,.15);}
+.btn-warn:hover{background:var(--gold);color:#000;border-color:var(--gold);}
+.btn-primary{background:linear-gradient(135deg,var(--pink),var(--pink2));color:#fff;border-color:transparent;box-shadow:0 4px 12px rgba(255,45,120,.2);}
+.btn-primary:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(255,45,120,.35);}
+.btn-ghost{background:rgba(255,255,255,.05);color:var(--white);border-color:rgba(255,255,255,.08);}
+.btn-ghost:hover{background:rgba(255,255,255,.08);}
+.btn-green{background:rgba(6,214,160,.1);color:var(--green);border-color:rgba(6,214,160,.15);}
+.btn-green:hover{background:var(--green);color:#000;}
+.btn-blue{background:rgba(88,101,242,.12);color:#7b8ff7;border-color:rgba(88,101,242,.2);}
+.btn-blue:hover{background:var(--blue);color:#fff;}
+.btn-sm{padding:.3rem .7rem;font-size:.65rem;}
+
+/* ── FORMS ── */
+.form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem;margin-top:1rem;}
 .form-group{display:flex;flex-direction:column;gap:.4rem;}
-.form-group label{font-size:.7rem;letter-spacing:1.5px;text-transform:uppercase;color:var(--grey);font-family:'Syne',sans-serif;}
-.form-control{background:var(--dark2);border:1px solid rgba(255,255,255,.08);border-radius:6px;padding:.7rem 1rem;color:var(--white);font-family:'DM Sans',sans-serif;font-size:.85rem;outline:none;transition:border .3s;width:100%;}
-.form-control:focus{border-color:var(--pink);}
-.form-control option{background:var(--dark2);}
-.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);backdrop-filter:blur(4px);z-index:200;display:none;align-items:center;justify-content:center;}
-.modal-overlay.open{display:flex;}
-.modal{background:var(--dark3);border:1px solid rgba(255,45,120,.2);border-radius:10px;padding:2rem;width:460px;max-width:90vw;}
-.modal h3{font-family:'Syne',sans-serif;font-weight:700;margin-bottom:.5rem;}
-.modal p{color:var(--grey);font-size:.85rem;margin-bottom:1.2rem;}
-.modal-actions{display:flex;gap:.8rem;justify-content:flex-end;margin-top:1.2rem;}
-#toast{position:fixed;bottom:2rem;right:2rem;background:var(--dark3);border:1px solid rgba(255,45,120,.3);border-radius:8px;padding:.9rem 1.5rem;font-size:.85rem;transform:translateY(100px);opacity:0;transition:all .3s;z-index:500;}
-#toast.show{transform:none;opacity:1;}#toast.success{border-color:rgba(6,214,160,.3);color:var(--green);}#toast.error{border-color:rgba(239,35,60,.3);color:var(--red);}
-.loader{display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,.1);border-top-color:var(--pink);border-radius:50%;animation:spin .6s linear infinite;}
-@keyframes spin{to{transform:rotate(360deg);}}
-.empty{text-align:center;padding:3rem;color:var(--grey);}
-.config-section{background:var(--dark3);border:1px solid rgba(255,255,255,.06);border-radius:8px;padding:1.5rem;margin-bottom:1.5rem;}
-.config-section h3{font-family:'Syne',sans-serif;font-weight:700;font-size:.95rem;margin-bottom:1.2rem;padding-bottom:.8rem;border-bottom:1px solid rgba(255,255,255,.05);}
-.progress-bar{height:4px;background:rgba(255,255,255,.08);border-radius:2px;overflow:hidden;margin-top:.3rem;}
-.progress-fill{height:100%;background:linear-gradient(90deg,var(--pink),var(--pink2));border-radius:2px;transition:width .5s;}
-.voice-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1rem;}
-.voice-channel{background:var(--dark3);border:1px solid rgba(255,255,255,.06);border-radius:8px;padding:1.2rem;}
-.voice-channel-name{font-family:'Syne',sans-serif;font-weight:700;font-size:.9rem;margin-bottom:1rem;display:flex;align-items:center;gap:.5rem;}
-.voice-member{display:flex;align-items:center;justify-content:space-between;padding:.5rem 0;border-bottom:1px solid rgba(255,255,255,.04);}
-.voice-member:last-child{border-bottom:none;}
-.log-container{background:var(--dark3);border:1px solid rgba(255,255,255,.06);border-radius:8px;padding:1rem;height:400px;overflow-y:auto;font-size:.8rem;}
-.log-entry{padding:.4rem .6rem;border-radius:4px;margin-bottom:.3rem;display:flex;gap:.8rem;}
-.log-entry.join{background:rgba(6,214,160,.05);}.log-entry.leave{background:rgba(255,209,102,.05);}
-.log-entry.delete{background:rgba(239,35,60,.05);}.log-entry.sanction{background:rgba(255,45,120,.05);}
-.log-time{color:var(--grey);font-size:.72rem;white-space:nowrap;}
-.rank-grid{display:grid;gap:1rem;}
-.rank-card{background:var(--dark3);border:1px solid rgba(255,255,255,.06);border-radius:8px;padding:1.2rem;}
-.rank-header{display:flex;align-items:center;gap:.8rem;margin-bottom:1rem;}
-.rank-badge{font-family:'Bebas Neue',sans-serif;font-size:1.4rem;color:var(--pink);min-width:40px;}
-.rank-members{display:flex;flex-wrap:wrap;gap:.5rem;}
-.rank-member{display:flex;align-items:center;gap:.4rem;background:var(--dark2);border-radius:999px;padding:.3rem .8rem;font-size:.78rem;}
-.tabs{display:flex;gap:.5rem;margin-bottom:1rem;}
-.tab{padding:.4rem 1rem;border-radius:5px;font-size:.75rem;font-family:'Syne',sans-serif;font-weight:600;cursor:pointer;background:rgba(255,255,255,.05);color:var(--grey);border:none;transition:all .2s;}
-.tab.active{background:var(--pink);color:#fff;}
+.form-group label{font-size:.62rem;letter-spacing:2px;text-transform:uppercase;color:var(--grey2);font-family:'Syne',sans-serif;font-weight:700;}
+.form-control{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:.75rem 1rem;color:var(--white);font-family:'DM Sans',sans-serif;font-size:.85rem;outline:none;transition:all .3s;width:100%;}
+.form-control:focus{border-color:rgba(255,45,120,.4);background:rgba(255,45,120,.03);}
+.form-control option{background:var(--dark3);}
 textarea.form-control{resize:vertical;min-height:80px;}
+select.form-control-sm{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:7px;padding:.45rem .9rem;color:var(--white);font-size:.78rem;outline:none;transition:all .2s;cursor:pointer;}
+select.form-control-sm:focus{border-color:rgba(255,45,120,.4);}
+
+/* ── CARD SECTIONS ── */
+.card{background:var(--dark3);border:1px solid var(--glass-border);border-radius:12px;padding:1.8rem;margin-bottom:1.5rem;}
+.card-title{font-family:'Syne',sans-serif;font-weight:700;font-size:.9rem;margin-bottom:1.3rem;padding-bottom:.9rem;border-bottom:1px solid var(--glass-border);display:flex;align-items:center;gap:.5rem;}
+
+/* ── MODAL ── */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);backdrop-filter:blur(8px);z-index:200;display:none;align-items:center;justify-content:center;}
+.modal-overlay.open{display:flex;}
+.modal{background:var(--dark3);border:1px solid rgba(255,45,120,.2);border-radius:14px;padding:2rem;width:480px;max-width:90vw;box-shadow:0 32px 80px rgba(0,0,0,.6),0 0 0 1px rgba(255,255,255,.03);animation:modalIn .25s ease;}
+@keyframes modalIn{from{opacity:0;transform:scale(.95) translateY(10px);}to{opacity:1;transform:none;}}
+.modal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;}
+.modal h3{font-family:'Syne',sans-serif;font-weight:700;font-size:1rem;}
+.modal-close{background:none;border:none;color:var(--grey2);cursor:pointer;font-size:1.2rem;padding:.2rem;}
+.modal-close:hover{color:var(--white);}
+.modal p{color:var(--grey2);font-size:.85rem;margin-bottom:1.2rem;line-height:1.6;}
+.modal-actions{display:flex;gap:.8rem;justify-content:flex-end;margin-top:1.5rem;}
+
+/* ── TOAST ── */
+#toast{
+  position:fixed;bottom:2rem;right:2rem;
+  background:var(--dark3);border:1px solid var(--glass-border);
+  border-radius:10px;padding:.9rem 1.5rem;font-size:.82rem;
+  transform:translateY(20px);opacity:0;
+  transition:all .35s cubic-bezier(.175,.885,.32,1.275);z-index:500;
+  display:flex;align-items:center;gap:.6rem;
+  box-shadow:0 8px 32px rgba(0,0,0,.4);
+}
+#toast.show{transform:none;opacity:1;}
+#toast.success{border-color:rgba(6,214,160,.3);color:var(--green);}
+#toast.error{border-color:rgba(239,35,60,.3);color:#ff6b7a;}
+
+/* ── LOADERS ── */
+.loader{display:inline-block;width:18px;height:18px;border:2px solid rgba(255,255,255,.08);border-top-color:var(--pink);border-radius:50%;animation:spin .7s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
+.empty{text-align:center;padding:3rem;color:var(--grey2);}
+.empty-icon{font-size:2.5rem;margin-bottom:.8rem;display:block;opacity:.5;}
+
+/* ── PROGRESS ── */
+.progress-bar{height:3px;background:rgba(255,255,255,.06);border-radius:2px;overflow:hidden;margin-top:.4rem;}
+.progress-fill{height:100%;background:linear-gradient(90deg,var(--pink),var(--pink2));border-radius:2px;transition:width .6s cubic-bezier(.175,.885,.32,1.275);}
+
+/* ── VOICE CARDS ── */
+.voice-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;}
+.voice-channel{background:var(--dark3);border:1px solid var(--glass-border);border-radius:12px;padding:1.3rem;transition:.3s;}
+.voice-channel:hover{border-color:rgba(6,214,160,.2);}
+.voice-channel-name{font-family:'Syne',sans-serif;font-weight:700;font-size:.88rem;margin-bottom:1rem;display:flex;align-items:center;gap:.5rem;color:var(--green);}
+.voice-member{display:flex;align-items:center;justify-content:space-between;padding:.55rem 0;border-bottom:1px solid rgba(255,255,255,.04);}
+.voice-member:last-child{border-bottom:none;}
+
+/* ── LOGS ── */
+.log-container{background:var(--dark2);border:1px solid var(--glass-border);border-radius:10px;padding:1rem;height:420px;overflow-y:auto;font-family:'DM Mono',monospace;font-size:.76rem;}
+.log-entry{padding:.35rem .6rem;border-radius:5px;margin-bottom:.25rem;display:flex;gap:.8rem;align-items:flex-start;}
+.log-entry.join{background:rgba(6,214,160,.05);border-left:2px solid rgba(6,214,160,.3);}
+.log-entry.leave{background:rgba(255,209,102,.05);border-left:2px solid rgba(255,209,102,.3);}
+.log-entry.delete{background:rgba(239,35,60,.05);border-left:2px solid rgba(239,35,60,.3);}
+.log-entry.sanction{background:rgba(255,45,120,.05);border-left:2px solid rgba(255,45,120,.3);}
+.log-time{color:var(--grey);font-size:.68rem;white-space:nowrap;flex-shrink:0;margin-top:.05rem;}
+
+/* ── RANKS ── */
+.rank-grid{display:grid;gap:.8rem;}
+.rank-card{background:var(--dark3);border:1px solid var(--glass-border);border-radius:10px;padding:1.2rem;display:flex;align-items:center;gap:1rem;transition:.3s;}
+.rank-card:hover{border-color:rgba(255,45,120,.15);}
+.rank-badge{font-family:'Bebas Neue',sans-serif;font-size:1.6rem;color:var(--pink);min-width:36px;text-align:center;line-height:1;}
+.rank-members{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.5rem;}
+.rank-member{display:flex;align-items:center;gap:.35rem;background:rgba(255,255,255,.04);border:1px solid var(--glass-border);border-radius:999px;padding:.25rem .7rem;font-size:.75rem;}
+
+/* ── TABS ── */
+.tabs{display:flex;gap:.4rem;margin-bottom:1.2rem;background:rgba(255,255,255,.03);padding:.3rem;border-radius:9px;width:fit-content;}
+.tab{padding:.45rem 1.1rem;border-radius:6px;font-size:.73rem;font-family:'Syne',sans-serif;font-weight:700;cursor:pointer;background:transparent;color:var(--grey2);border:none;transition:all .2s;letter-spacing:.5px;}
+.tab.active{background:var(--pink);color:#fff;box-shadow:0 2px 8px rgba(255,45,120,.3);}
+.tab:not(.active):hover{color:var(--white);}
 </style>
 </head>
 <body>
 
+<!-- ── LOGIN ── -->
 <div id="login-screen">
-  <div class="login-box">
-    <h1>KOZA<span>KURA</span></h1>
-    <p>Dashboard de gestion du bot</p>
-    <input type="text" class="login-input" id="api-url-input" placeholder="URL API (ex: https://xxx.railway.app)">
-    <input type="password" class="login-input" id="api-key-input" placeholder="Clé secrète">
-    <button class="login-btn" onclick="doLogin()">Connexion →</button>
-    <div class="login-error" id="login-error">Clé invalide ou API inaccessible</div>
+  <div class="login-wrap">
+    <div class="login-logo">KOZA<span>KURA</span><small>Administration Panel</small></div>
+    <div class="login-card">
+      <div class="login-field">
+        <label>URL de l'API</label>
+        <input type="text" id="api-url-input" placeholder="https://kozakura-production.up.railway.app" autocomplete="off">
+      </div>
+      <div class="login-field">
+        <label>Clé secrète</label>
+        <input type="password" id="api-key-input" placeholder="••••••••••••">
+      </div>
+      <button class="login-btn" onclick="doLogin()">Connexion →</button>
+      <div class="login-error" id="login-error">⚠ Clé invalide ou API inaccessible</div>
+    </div>
   </div>
 </div>
 
+<!-- ── APP ── -->
 <div id="app">
   <aside class="sidebar">
-    <div class="sidebar-logo"><h2>KOZA<span>KURA</span></h2><small id="guild-name">Dashboard</small></div>
+    <div class="sidebar-logo">
+      <div class="sidebar-logo-icon">🌸</div>
+      <div class="sidebar-logo-text"><h2>KOZA<span>KURA</span></h2><small id="guild-name">Dashboard</small></div>
+    </div>
     <div class="nav-section">Général</div>
-    <div class="nav-item active" onclick="showPage('overview',this)"><span>📊</span> Vue d'ensemble</div>
+    <div class="nav-item active" onclick="showPage('overview',this)"><span class="nav-icon">📊</span> Vue d'ensemble</div>
     <div class="nav-section">Gestion</div>
-    <div class="nav-item" onclick="showPage('members',this)"><span>👥</span> Membres</div>
-    <div class="nav-item" onclick="showPage('sanctions',this)"><span>⚖️</span> Sanctions</div>
-    <div class="nav-item" onclick="showPage('tickets',this)"><span>🎫</span> Tickets</div>
-    <div class="nav-item" onclick="showPage('roles',this)"><span>🎭</span> Rôles</div>
-    <div class="nav-item" onclick="showPage('ranks',this)"><span>🎖️</span> Rangs</div>
+    <div class="nav-item" onclick="showPage('members',this)"><span class="nav-icon">👥</span> Membres</div>
+    <div class="nav-item" onclick="showPage('sanctions',this)"><span class="nav-icon">⚖️</span> Sanctions</div>
+    <div class="nav-item" onclick="showPage('tickets',this)"><span class="nav-icon">🎫</span> Tickets</div>
+    <div class="nav-item" onclick="showPage('roles',this)"><span class="nav-icon">🎭</span> Rôles</div>
+    <div class="nav-item" onclick="showPage('ranks',this)"><span class="nav-icon">🎖️</span> Rangs</div>
     <div class="nav-section">Vocal & Messages</div>
-    <div class="nav-item" onclick="showPage('voice',this)"><span>🔊</span> Salons Vocaux</div>
-    <div class="nav-item" onclick="showPage('messages',this)"><span>💬</span> Envoyer Message</div>
-    <div class="nav-item" onclick="showPage('logs',this)"><span>📋</span> Logs Temps Réel</div>
-    <div class="nav-section">Système</div>
-    <div class="nav-item" onclick="showPage('xp',this)"><span>🏆</span> XP & Niveaux</div>
-    <div class="nav-item" onclick="showPage('trophees',this)"><span>🏅</span> Trophées</div>
-    <div class="nav-item" onclick="showPage('giveaways',this)"><span>🎉</span> Giveaways</div>
+    <div class="nav-item" onclick="showPage('voice',this)"><span class="nav-icon">🔊</span> Salons Vocaux</div>
+    <div class="nav-item" onclick="showPage('messages',this)"><span class="nav-icon">💬</span> Envoyer Message</div>
+    <div class="nav-item" onclick="showPage('logs',this)"><span class="nav-icon">📋</span> Logs Temps Réel</div>
+    <div class="nav-section">Progression</div>
+    <div class="nav-item" onclick="showPage('xp',this)"><span class="nav-icon">🏆</span> XP & Niveaux</div>
+    <div class="nav-item" onclick="showPage('trophees',this)"><span class="nav-icon">🏅</span> Trophées</div>
+    <div class="nav-item" onclick="showPage('giveaways',this)"><span class="nav-icon">🎉</span> Giveaways</div>
     <div class="nav-section">Sécurité</div>
-    <div class="nav-item" onclick="showPage('shadowban',this)"><span>👻</span> Shadowban</div>
-    <div class="nav-item" onclick="showPage('watchlist',this)"><span>👁️</span> Watchlist</div>
-    <div class="nav-item" onclick="showPage('reports',this)"><span>🚨</span> Signalements</div>
+    <div class="nav-item" onclick="showPage('shadowban',this)"><span class="nav-icon">👻</span> Shadowban</div>
+    <div class="nav-item" onclick="showPage('watchlist',this)"><span class="nav-icon">👁️</span> Watchlist</div>
+    <div class="nav-item" onclick="showPage('reports',this)"><span class="nav-icon">🚨</span> Signalements</div>
     <div class="nav-section">Paramètres</div>
-    <div class="nav-item" onclick="showPage('config',this)"><span>⚙️</span> Configuration</div>
-    <div class="sidebar-footer"><div class="ping-badge"><div class="ping-dot"></div><span id="ping-text">-- ms</span></div></div>
+    <div class="nav-item" onclick="showPage('config',this)"><span class="nav-icon">⚙️</span> Configuration</div>
+    <div class="sidebar-footer">
+      <div class="status-bar">
+        <div class="ping-badge"><div class="ping-dot"></div><span id="ping-text">-- ms</span></div>
+        <span class="sidebar-version">v2.0</span>
+      </div>
+    </div>
   </aside>
 
   <main class="main">
 
+    <!-- VUE D'ENSEMBLE -->
     <div class="page active" id="page-overview">
-      <div class="page-header"><h1>VUE D'<span>ENSEMBLE</span></h1><p>Statistiques en temps réel</p></div>
+      <div class="page-header">
+        <div class="page-header-left"><h1>VUE D'<span>ENSEMBLE</span></h1><p>Statistiques du serveur en temps réel</p></div>
+        <button class="btn btn-ghost" onclick="loadOverview()">↻ Actualiser</button>
+      </div>
       <div class="stats-grid">
-        <div class="stat-card"><div class="label">Membres</div><div class="value" id="stat-members">--</div></div>
-        <div class="stat-card"><div class="label">En ligne</div><div class="value pink" id="stat-online">--</div></div>
-        <div class="stat-card"><div class="label">Boosts</div><div class="value gold" id="stat-boosts">--</div></div>
-        <div class="stat-card"><div class="label">Tickets</div><div class="value pink" id="stat-tickets">--</div></div>
-        <div class="stat-card"><div class="label">Sanctions</div><div class="value" id="stat-sanctions">--</div></div>
-        <div class="stat-card"><div class="label">Giveaways</div><div class="value green" id="stat-giveaways">--</div></div>
+        <div class="stat-card"><div class="stat-accent"></div><span class="s-icon">👥</span><div class="s-label">Membres</div><div class="s-value" id="stat-members">--</div></div>
+        <div class="stat-card"><div class="stat-accent"></div><span class="s-icon">🟢</span><div class="s-label">En ligne</div><div class="s-value pink" id="stat-online">--</div></div>
+        <div class="stat-card"><div class="stat-accent"></div><span class="s-icon">✨</span><div class="s-label">Boosts</div><div class="s-value gold" id="stat-boosts">--</div></div>
+        <div class="stat-card"><div class="stat-accent"></div><span class="s-icon">🎫</span><div class="s-label">Tickets</div><div class="s-value pink" id="stat-tickets">--</div></div>
+        <div class="stat-card"><div class="stat-accent"></div><span class="s-icon">⚖️</span><div class="s-label">Sanctions</div><div class="s-value" id="stat-sanctions">--</div></div>
+        <div class="stat-card"><div class="stat-accent"></div><span class="s-icon">🎉</span><div class="s-label">Giveaways</div><div class="s-value green" id="stat-giveaways">--</div></div>
       </div>
     </div>
 
+    <!-- MEMBRES -->
     <div class="page" id="page-members">
-      <div class="page-header"><h1><span>MEMBRES</span></h1><p>Gérer les membres</p></div>
+      <div class="page-header"><div class="page-header-left"><h1><span>MEMBRES</span></h1><p>Gérer les membres du serveur</p></div></div>
       <div class="table-wrap">
-        <div class="table-header"><span class="table-title">Liste</span><input type="text" class="search-input" placeholder="🔍 Rechercher..." oninput="filterMembers(this.value)"></div>
+        <div class="table-header">
+          <span class="table-title">Liste des membres</span>
+          <div class="search-wrap"><input type="text" class="search-input" placeholder="Rechercher..." oninput="filterMembers(this.value)"></div>
+        </div>
         <table><thead><tr><th>Membre</th><th>Rôles</th><th>Vocal</th><th>Actions</th></tr></thead>
         <tbody id="members-tbody"><tr><td colspan="4"><div class="empty"><div class="loader"></div></div></td></tr></tbody></table>
       </div>
     </div>
 
+    <!-- SANCTIONS -->
     <div class="page" id="page-sanctions">
-      <div class="page-header"><h1><span>SANCTIONS</span></h1><p>Historique</p></div>
+      <div class="page-header"><div class="page-header-left"><h1><span>SANCTIONS</span></h1><p>Historique complet des sanctions</p></div></div>
       <div class="table-wrap">
-        <div class="table-header"><span class="table-title">Historique</span><input type="text" class="search-input" placeholder="🔍 Rechercher..." oninput="filterSanctions(this.value)"></div>
+        <div class="table-header">
+          <span class="table-title">Historique</span>
+          <div class="search-wrap"><input type="text" class="search-input" placeholder="Rechercher..." oninput="filterSanctions(this.value)"></div>
+        </div>
         <table><thead><tr><th>Membre</th><th>Type</th><th>Raison</th><th>Par</th><th>Date</th></tr></thead>
         <tbody id="sanctions-tbody"><tr><td colspan="5"><div class="empty"><div class="loader"></div></div></td></tr></tbody></table>
       </div>
     </div>
 
+    <!-- TICKETS -->
     <div class="page" id="page-tickets">
-      <div class="page-header"><h1><span>TICKETS</span></h1><p>Gérer les tickets de support</p></div>
+      <div class="page-header"><div class="page-header-left"><h1><span>TICKETS</span></h1><p>Gestion des tickets de support</p></div></div>
       <div class="table-wrap">
         <div class="table-header">
           <span class="table-title">Tickets</span>
-          <div style="display:flex;gap:.5rem;">
-            <select id="ticket-filter" style="background:var(--dark2);border:1px solid rgba(255,255,255,.1);color:var(--white);padding:.4rem .8rem;border-radius:6px;font-size:.8rem;" onchange="loadTickets()">
-              <option value="open">Ouverts</option>
-              <option value="closed">Fermés</option>
-              <option value="all">Tous</option>
-            </select>
-          </div>
+          <select class="form-control-sm" id="ticket-filter" onchange="loadTickets()">
+            <option value="open">Ouverts</option>
+            <option value="closed">Fermés</option>
+            <option value="all">Tous</option>
+          </select>
         </div>
-        <table><thead><tr><th>#</th><th>Type</th><th>Priorité</th><th>Ouvert par</th><th>Claim</th><th>Date</th><th>Actions</th></tr></thead>
+        <table><thead><tr><th>#</th><th>Type</th><th>Priorité</th><th>Ouvert par</th><th>Claim</th><th>Ouvert le</th><th>Actions</th></tr></thead>
         <tbody id="tickets-tbody"><tr><td colspan="7"><div class="empty"><div class="loader"></div></div></td></tr></tbody></table>
       </div>
     </div>
 
+    <!-- SHADOWBAN -->
     <div class="page" id="page-shadowban">
-      <div class="page-header"><h1><span>SHADOWBAN</span></h1><p>Membres dont les messages sont supprimés silencieusement</p></div>
+      <div class="page-header"><div class="page-header-left"><h1><span>SHADOWBAN</span></h1><p>Messages supprimés silencieusement</p></div></div>
       <div class="table-wrap">
         <div class="table-header"><span class="table-title">Shadowbans actifs</span></div>
         <table><thead><tr><th>Membre</th><th>Raison</th><th>Date</th><th>Actions</th></tr></thead>
@@ -214,8 +376,9 @@ textarea.form-control{resize:vertical;min-height:80px;}
       </div>
     </div>
 
+    <!-- WATCHLIST -->
     <div class="page" id="page-watchlist">
-      <div class="page-header"><h1><span>WATCHLIST</span></h1><p>Membres sous surveillance — alerte à chaque message</p></div>
+      <div class="page-header"><div class="page-header-left"><h1><span>WATCHLIST</span></h1><p>Membres sous surveillance active</p></div></div>
       <div class="table-wrap">
         <div class="table-header"><span class="table-title">Membres surveillés</span></div>
         <table><thead><tr><th>Membre</th><th>Raison</th><th>Ajouté par</th><th>Date</th><th>Actions</th></tr></thead>
@@ -223,8 +386,9 @@ textarea.form-control{resize:vertical;min-height:80px;}
       </div>
     </div>
 
+    <!-- SIGNALEMENTS -->
     <div class="page" id="page-reports">
-      <div class="page-header"><h1><span>SIGNALEMENTS</span></h1><p>Membres signalés par la communauté</p></div>
+      <div class="page-header"><div class="page-header-left"><h1><span>SIGNALEMENTS</span></h1><p>Rapports soumis par la communauté</p></div></div>
       <div class="table-wrap">
         <div class="table-header"><span class="table-title">Derniers signalements</span></div>
         <table><thead><tr><th>Signalé</th><th>Signaleur</th><th>Raison</th><th>Date</th></tr></thead>
@@ -232,12 +396,13 @@ textarea.form-control{resize:vertical;min-height:80px;}
       </div>
     </div>
 
+    <!-- RÔLES -->
     <div class="page" id="page-roles">
-      <div class="page-header"><h1><span>RÔLES</span></h1><p>Gérer les rôles</p></div>
-      <div class="config-section">
-        <h3>➕ Créer un rôle</h3>
+      <div class="page-header"><div class="page-header-left"><h1><span>RÔLES</span></h1><p>Créer et gérer les rôles</p></div></div>
+      <div class="card">
+        <div class="card-title">➕ Créer un rôle</div>
         <div style="display:flex;gap:1rem;align-items:flex-end;flex-wrap:wrap">
-          <div class="form-group" style="flex:1"><label>Nom</label><input type="text" class="form-control" id="role-name-input" placeholder="Nom du rôle"></div>
+          <div class="form-group" style="flex:1"><label>Nom du rôle</label><input type="text" class="form-control" id="role-name-input" placeholder="Ex: VIP, Partenaire..."></div>
           <button class="btn btn-primary" onclick="createRole()">➕ Créer</button>
         </div>
       </div>
@@ -248,95 +413,110 @@ textarea.form-control{resize:vertical;min-height:80px;}
       </div>
     </div>
 
+    <!-- RANGS -->
     <div class="page" id="page-ranks">
-      <div class="page-header"><h1><span>RANGS</span></h1><p>Hiérarchie Kozakura</p></div>
-      <div id="ranks-content"><div class="empty"><div class="loader"></div></div></div>
+      <div class="page-header"><div class="page-header-left"><h1><span>RANGS</span></h1><p>Hiérarchie Kozakura</p></div></div>
+      <div id="ranks-content"><div class="empty"><span class="empty-icon">🎖️</span><div class="loader"></div></div></div>
     </div>
 
+    <!-- VOCAL -->
     <div class="page" id="page-voice">
-      <div class="page-header"><h1>SALONS <span>VOCAUX</span></h1><p>Temps réel</p></div>
-      <button class="btn btn-ghost" onclick="loadVoice()" style="margin-bottom:1rem">🔄 Actualiser</button>
-      <div class="voice-grid" id="voice-grid"><div class="empty"><div class="loader"></div></div></div>
+      <div class="page-header">
+        <div class="page-header-left"><h1>SALONS <span>VOCAUX</span></h1><p>Membres connectés en temps réel</p></div>
+        <button class="btn btn-ghost" onclick="loadVoice()">↻ Actualiser</button>
+      </div>
+      <div class="voice-grid" id="voice-grid"><div class="empty"><span class="empty-icon">🔇</span><div class="loader"></div></div></div>
     </div>
 
+    <!-- MESSAGES -->
     <div class="page" id="page-messages">
-      <div class="page-header"><h1>ENVOYER UN <span>MESSAGE</span></h1><p>Poster dans un salon</p></div>
-      <div class="config-section">
+      <div class="page-header"><div class="page-header-left"><h1>ENVOYER UN <span>MESSAGE</span></h1><p>Poster dans n'importe quel salon</p></div></div>
+      <div class="card">
+        <div class="card-title">💬 Composer</div>
         <div class="tabs">
-          <button class="tab active" onclick="setMsgType('text',this)">💬 Texte</button>
+          <button class="tab active" onclick="setMsgType('text',this)">Texte simple</button>
           <button class="tab" onclick="setMsgType('embed',this)">✨ Embed</button>
         </div>
         <div class="form-grid">
-          <div class="form-group"><label>Salon</label><select class="form-control" id="msg-channel"></select></div>
-          <div class="form-group" id="embed-title-group" style="display:none"><label>Titre embed</label><input type="text" class="form-control" id="msg-embed-title" placeholder="Titre"></div>
-          <div class="form-group" id="embed-color-group" style="display:none"><label>Couleur</label><input type="color" class="form-control" id="msg-color" value="#FF2D78" style="padding:.3rem;height:42px"></div>
+          <div class="form-group"><label>Salon cible</label><select class="form-control" id="msg-channel"></select></div>
+          <div class="form-group" id="embed-title-group" style="display:none"><label>Titre de l'embed</label><input type="text" class="form-control" id="msg-embed-title" placeholder="Titre..."></div>
+          <div class="form-group" id="embed-color-group" style="display:none"><label>Couleur</label><input type="color" class="form-control" id="msg-color" value="#FF2D78" style="padding:.3rem;height:42px;cursor:pointer;"></div>
         </div>
-        <div class="form-group" style="margin-top:1rem"><label>Message</label><textarea class="form-control" id="msg-content" placeholder="Ton message..."></textarea></div>
-        <button class="btn btn-primary" style="margin-top:1rem" onclick="sendMessage()">📤 Envoyer</button>
+        <div class="form-group" style="margin-top:1rem"><label>Message</label><textarea class="form-control" id="msg-content" placeholder="Écris ton message ici..."></textarea></div>
+        <button class="btn btn-primary" style="margin-top:1.2rem" onclick="sendMessage()">📤 Envoyer</button>
       </div>
     </div>
 
+    <!-- LOGS -->
     <div class="page" id="page-logs">
-      <div class="page-header"><h1>LOGS <span>TEMPS RÉEL</span></h1><p>Activité du serveur</p></div>
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
-        <div style="display:flex;gap:.5rem">
+      <div class="page-header">
+        <div class="page-header-left"><h1>LOGS <span>TEMPS RÉEL</span></h1><p>Activité du serveur — mise à jour automatique</p></div>
+        <div style="display:flex;align-items:center;gap:.8rem">
           <span class="badge badge-green">● Joins</span>
           <span class="badge badge-yellow">● Départs</span>
           <span class="badge badge-red">● Suppressions</span>
+          <button class="btn btn-ghost btn-sm" onclick="loadLogs()">↻</button>
         </div>
-        <button class="btn btn-ghost" onclick="loadLogs()">🔄 Actualiser</button>
       </div>
       <div class="log-container" id="log-container"><div class="empty"><div class="loader"></div></div></div>
     </div>
 
+    <!-- XP -->
     <div class="page" id="page-xp">
-      <div class="page-header"><h1>XP & <span>NIVEAUX</span></h1><p>Leaderboard</p></div>
+      <div class="page-header"><div class="page-header-left"><h1>XP & <span>NIVEAUX</span></h1><p>Classement des membres</p></div></div>
       <div class="table-wrap">
-        <div class="table-header"><span class="table-title">Classement</span></div>
-        <table><thead><tr><th>#</th><th>Membre</th><th>Niveau</th><th>XP</th><th>Barre</th></tr></thead>
+        <div class="table-header"><span class="table-title">Leaderboard</span></div>
+        <table><thead><tr><th>#</th><th>Membre</th><th>Niveau</th><th>XP Total</th><th>Progression</th></tr></thead>
         <tbody id="xp-tbody"><tr><td colspan="5"><div class="empty"><div class="loader"></div></div></td></tr></tbody></table>
       </div>
     </div>
 
+    <!-- TROPHÉES -->
     <div class="page" id="page-trophees">
-      <div class="page-header"><h1><span>TROPHÉES</span></h1><p>Votes & vocal</p></div>
+      <div class="page-header"><div class="page-header-left"><h1><span>TROPHÉES</span></h1><p>Votes et temps vocal</p></div></div>
       <div class="table-wrap">
         <div class="table-header"><span class="table-title">Classement</span></div>
-        <table><thead><tr><th>#</th><th>Membre</th><th>Votes</th><th>Vocal</th></tr></thead>
+        <table><thead><tr><th>#</th><th>Membre</th><th>Votes ⭐</th><th>Vocal 🎙️</th></tr></thead>
         <tbody id="trophees-tbody"><tr><td colspan="4"><div class="empty"><div class="loader"></div></div></td></tr></tbody></table>
       </div>
     </div>
 
+    <!-- GIVEAWAYS -->
     <div class="page" id="page-giveaways">
-      <div class="page-header"><h1><span>GIVEAWAYS</span></h1><p>Créer et gérer</p></div>
-      <div class="config-section">
-        <h3>🎉 Créer un Giveaway</h3>
+      <div class="page-header"><div class="page-header-left"><h1><span>GIVEAWAYS</span></h1><p>Créer et gérer les concours</p></div></div>
+      <div class="card">
+        <div class="card-title">🎉 Créer un Giveaway</div>
         <div class="form-grid">
-          <div class="form-group"><label>Prix</label><input type="text" class="form-control" id="gw-prize" placeholder="Nitro, PSN..."></div>
-          <div class="form-group"><label>Durée (sec)</label><input type="number" class="form-control" id="gw-duration" value="3600"></div>
-          <div class="form-group"><label>Gagnants</label><input type="number" class="form-control" id="gw-winners" value="1"></div>
+          <div class="form-group"><label>Prix</label><input type="text" class="form-control" id="gw-prize" placeholder="Discord Nitro, PSN..."></div>
+          <div class="form-group"><label>Durée (secondes)</label><input type="number" class="form-control" id="gw-duration" value="3600"></div>
+          <div class="form-group"><label>Nb gagnants</label><input type="number" class="form-control" id="gw-winners" value="1"></div>
           <div class="form-group"><label>Salon</label><select class="form-control" id="gw-channel"></select></div>
         </div>
-        <button class="btn btn-primary" style="margin-top:1.2rem" onclick="createGiveaway()">🎉 Lancer</button>
+        <button class="btn btn-primary" style="margin-top:1.2rem" onclick="createGiveaway()">🎉 Lancer le giveaway</button>
       </div>
       <div class="table-wrap">
-        <div class="table-header"><span class="table-title">Giveaways</span></div>
+        <div class="table-header"><span class="table-title">Giveaways actifs & passés</span></div>
         <table><thead><tr><th>Prix</th><th>Gagnants</th><th>Statut</th><th>Fin</th></tr></thead>
         <tbody id="giveaways-tbody"></tbody></table>
       </div>
     </div>
 
+    <!-- CONFIG -->
     <div class="page" id="page-config">
-      <div class="page-header"><h1><span>CONFIGURATION</span></h1><p>Paramètres du bot</p></div>
+      <div class="page-header"><div class="page-header-left"><h1><span>CONFIGURATION</span></h1><p>Paramètres et réglages du bot</p></div></div>
       <div id="config-content"><div class="empty"><div class="loader"></div></div></div>
     </div>
 
   </main>
 </div>
 
+<!-- MODAL -->
 <div class="modal-overlay" id="modal">
   <div class="modal">
-    <h3 id="modal-title">Confirmer</h3>
+    <div class="modal-header">
+      <h3 id="modal-title">Confirmer</h3>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
     <p id="modal-desc"></p>
     <div id="modal-body">
       <div class="form-group"><label>Raison</label><input type="text" class="form-control" id="modal-reason" placeholder="Raison (optionnel)"></div>
@@ -358,6 +538,7 @@ async function doLogin(){
   API_URL=document.getElementById('api-url-input').value.trim().replace(/\/$/,'');
   API_KEY=document.getElementById('api-key-input').value.trim();
   const err=document.getElementById('login-error');err.style.display='none';
+  const btn=document.querySelector('.login-btn');btn.textContent='Connexion...';btn.disabled=true;
   try{
     const r=await fetch(`${API_URL}/api/auth`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:API_KEY})});
     if(!r.ok)throw new Error();
@@ -367,6 +548,7 @@ async function doLogin(){
     document.getElementById('app').classList.add('visible');
     loadOverview();loadChannels();setInterval(refreshPing,15000);
   }catch(e){err.style.display='block';}
+  btn.textContent='Connexion →';btn.disabled=false;
 }
 
 async function apiGet(p){const r=await fetch(API_URL+p,{headers:{'X-API-Key':API_KEY}});return r.json();}
@@ -383,7 +565,11 @@ function showPage(name,el){
   if(map[name])map[name]();
 }
 
-function toast(msg,type='success'){const t=document.getElementById('toast');t.textContent=msg;t.className='show '+type;setTimeout(()=>t.className='',3000);}
+function toast(msg,type='success'){
+  const t=document.getElementById('toast');
+  t.innerHTML=(type==='success'?'<span style="color:var(--green)">✓</span> ':'<span style="color:#ff6b7a">✗</span> ')+msg;
+  t.className='show '+type;setTimeout(()=>t.className='',3500);
+}
 
 function openModal(title,desc,cb,btnClass='btn-danger',customBody=null){
   document.getElementById('modal-title').textContent=title;
@@ -409,6 +595,11 @@ async function loadOverview(){
 }
 async function refreshPing(){try{const d=await apiGet('/api/stats');document.getElementById('ping-text').textContent=d.ping+' ms';}catch(e){}}
 
+function memberCell(m){
+  const av=m.avatar?`<img class="avatar" src="${m.avatar}" onerror="this.style.display='none'">`:`<div class="avatar-placeholder">${(m.display_name||'?')[0]}</div>`;
+  return`<div class="member-cell">${av}<div><div class="member-name">${m.display_name}</div><div class="member-tag">${m.name}</div></div></div>`;
+}
+
 async function loadMembers(){
   const tb=document.getElementById('members-tbody');
   tb.innerHTML='<tr><td colspan="4"><div class="empty"><div class="loader"></div></div></td></tr>';
@@ -416,85 +607,62 @@ async function loadMembers(){
 }
 function renderMembers(members){
   const tb=document.getElementById('members-tbody');
-  if(!members.length){tb.innerHTML='<tr><td colspan="5"><div class="empty"><div style="font-size:2rem">👥</div><p>Aucun membre</p></div></td></tr>';return;}
+  if(!members.length){tb.innerHTML='<tr><td colspan="4"><div class="empty"><span class="empty-icon">👥</span><p>Aucun membre</p></div></td></tr>';return;}
   tb.innerHTML=members.map(m=>{
-    const roles=m.roles.slice(0,2).map(r=>`<span class="badge badge-pink">${r}</span>`).join(' ');
-    const vocal=m.voice_ch?`<span class="badge badge-green">🔊 ${m.voice_ch}</span>`:'';
-    return`<tr><td><div class="member-cell"><div class="avatar-placeholder">${m.display_name[0]}</div><div><div style="font-weight:500">${m.display_name}</div><div style="font-size:.75rem;color:var(--grey)">${m.name}</div></div></div></td>
-    <td>${roles||'—'}</td><td>${vocal}</td>
-    <td><div style="display:flex;gap:.3rem;flex-wrap:wrap">
-      <button class="btn btn-blue" onclick="openRoleModal('${m.id}','${m.display_name}')">🎭 Rôles</button>
-      <button class="btn btn-warn" onclick="actionMember('${m.id}','${m.display_name}','mute')">🔇</button>
-      <button class="btn btn-danger" onclick="actionMember('${m.id}','${m.display_name}','kick')">👟</button>
-      <button class="btn btn-danger" onclick="actionMember('${m.id}','${m.display_name}','ban')">🔨</button>
-    </div></td></tr>`;
+    const roles=m.roles.slice(0,3).map(r=>`<span class="badge badge-pink">${r}</span>`).join(' ');
+    const vocal=m.voice_ch?`<span class="badge badge-green">🔊 ${m.voice_ch}</span>`:'<span style="color:var(--grey)">—</span>';
+    return`<tr>
+      <td>${memberCell(m)}</td>
+      <td>${roles||'<span style="color:var(--grey)">—</span>'}</td>
+      <td>${vocal}</td>
+      <td><div style="display:flex;gap:.3rem;flex-wrap:wrap">
+        <button class="btn btn-blue btn-sm" onclick="openRoleModal('${m.id}','${m.display_name}')">🎭 Rôles</button>
+        <button class="btn btn-warn btn-sm" onclick="actionMember('${m.id}','${m.display_name}','mute')">🔇</button>
+        <button class="btn btn-danger btn-sm" onclick="actionMember('${m.id}','${m.display_name}','kick')">👟</button>
+        <button class="btn btn-danger btn-sm" onclick="actionMember('${m.id}','${m.display_name}','ban')">🔨</button>
+      </div></td>
+    </tr>`;
   }).join('');
 }
-function filterMembers(q){renderMembers(allMembers.filter(m=>m.display_name.toLowerCase().includes(q.toLowerCase())||m.name.toLowerCase().includes(q.toLowerCase())));}
+function filterMembers(q){renderMembers(allMembers.filter(m=>(m.display_name+m.name).toLowerCase().includes(q.toLowerCase())));}
 
-async function openRoleModal(memberId, memberName){
-  // Charger les rôles du serveur et du membre
-  const [rolesData, memberData] = await Promise.all([
-    apiGet(`/api/${GUILD_ID}/roles`),
-    apiGet(`/api/${GUILD_ID}/members/${memberId}`)
-  ]);
-  const allRoles = rolesData.roles || [];
-  const memberRoles = memberData.roles || [];
-
-  const body = `
-    <div style="margin-bottom:.8rem">
-      <input type="text" class="form-control" id="role-search" placeholder="🔍 Rechercher un rôle..." oninput="filterRoleList(this.value)" style="margin-bottom:.8rem">
-      <div id="role-list" style="max-height:280px;overflow-y:auto;display:flex;flex-direction:column;gap:.4rem">
-        ${allRoles.map(r => {
-          const has = memberRoles.includes(r.name);
-          return `<div class="role-item" data-name="${r.name.toLowerCase()}" style="display:flex;align-items:center;justify-content:space-between;background:var(--dark2);border-radius:6px;padding:.6rem .9rem;">
-            <div style="display:flex;align-items:center;gap:.6rem">
-              <div style="width:10px;height:10px;border-radius:50%;background:${r.color}"></div>
-              <span style="font-size:.85rem">${r.name}</span>
-              <span style="font-size:.7rem;color:var(--grey)">${r.members} membres</span>
-            </div>
-            ${has
-              ? `<button class="btn btn-danger" style="padding:.3rem .7rem;font-size:.7rem" onclick="toggleRole('${memberId}','${r.id}','remove','${r.name}')">✖ Retirer</button>`
-              : `<button class="btn btn-green" style="padding:.3rem .7rem;font-size:.7rem" onclick="toggleRole('${memberId}','${r.id}','add','${r.name}')">✚ Ajouter</button>`
-            }
-          </div>`;
-        }).join('')}
-      </div>
-    </div>`;
-
-  document.getElementById('modal-title').textContent = `🎭 Rôles — ${memberName}`;
-  document.getElementById('modal-desc').textContent = 'Ajouter ou retirer des rôles à ce membre';
-  document.getElementById('modal-body').innerHTML = body;
-  document.getElementById('modal-confirm').style.display = 'none';
+async function openRoleModal(memberId,memberName){
+  const [rolesData,memberData]=await Promise.all([apiGet(`/api/${GUILD_ID}/roles`),apiGet(`/api/${GUILD_ID}/members/${memberId}`)]);
+  const allRoles=rolesData.roles||[];const memberRoles=memberData.roles||[];
+  const body=`<div>
+    <input type="text" class="form-control" id="role-search" placeholder="🔍 Rechercher un rôle..." oninput="filterRoleList(this.value)" style="margin-bottom:.8rem">
+    <div id="role-list" style="max-height:280px;overflow-y:auto;display:flex;flex-direction:column;gap:.3rem">
+      ${allRoles.map(r=>{const has=memberRoles.includes(r.name);return`<div class="role-item" data-name="${r.name.toLowerCase()}" style="display:flex;align-items:center;justify-content:space-between;background:rgba(255,255,255,.03);border:1px solid var(--glass-border);border-radius:8px;padding:.6rem .9rem;">
+        <div style="display:flex;align-items:center;gap:.6rem">
+          <div style="width:9px;height:9px;border-radius:50%;background:${r.color};box-shadow:0 0 6px ${r.color}40"></div>
+          <span style="font-size:.83rem">${r.name}</span>
+          <span style="font-size:.68rem;color:var(--grey)">${r.members}</span>
+        </div>
+        ${has?`<button class="btn btn-danger btn-sm" onclick="toggleRole('${memberId}','${r.id}','remove','${r.name}')">✖ Retirer</button>`
+             :`<button class="btn btn-green btn-sm" onclick="toggleRole('${memberId}','${r.id}','add','${r.name}')">✚ Ajouter</button>`}
+      </div>`;}).join('')}
+    </div>
+  </div>`;
+  document.getElementById('modal-title').textContent=`🎭 Rôles — ${memberName}`;
+  document.getElementById('modal-desc').textContent='Ajouter ou retirer des rôles';
+  document.getElementById('modal-body').innerHTML=body;
+  document.getElementById('modal-confirm').style.display='none';
   document.getElementById('modal').classList.add('open');
 }
-
-function filterRoleList(q){
-  document.querySelectorAll('.role-item').forEach(el=>{
-    el.style.display = el.dataset.name.includes(q.toLowerCase()) ? 'flex' : 'none';
-  });
+function filterRoleList(q){document.querySelectorAll('.role-item').forEach(el=>{el.style.display=el.dataset.name.includes(q.toLowerCase())?'flex':'none';});}
+async function toggleRole(memberId,roleId,action,roleName){
+  const ep=action==='add'?`/api/${GUILD_ID}/roles/${roleId}/give`:`/api/${GUILD_ID}/roles/${roleId}/remove`;
+  await apiPost(ep,{member_id:memberId});toast(`Rôle "${roleName}" ${action==='add'?'ajouté':'retiré'}`);
+  openRoleModal(memberId,allMembers.find(m=>m.id===memberId)?.display_name||'');
 }
-
-async function toggleRole(memberId, roleId, action, roleName){
-  const endpoint = action === 'add'
-    ? `/api/${GUILD_ID}/roles/${roleId}/give`
-    : `/api/${GUILD_ID}/roles/${roleId}/remove`;
-  await apiPost(endpoint, {member_id: memberId});
-  toast(`✅ Rôle "${roleName}" ${action === 'add' ? 'ajouté' : 'retiré'}`);
-  // Recharger la liste des rôles dans la modal
-  const member = allMembers.find(m => m.id === memberId);
-  if(member) openRoleModal(memberId, member.display_name);
-}
-
 async function actionMember(id,name,action){
   const labels={mute:'Mute',kick:'Kick',ban:'Ban'};
   openModal(`${labels[action]} — ${name}`,`Confirmer le ${action} de ${name} ?`,async()=>{
     const reason=document.getElementById('modal-reason')?.value||`${action} depuis dashboard`;
     await apiPost(`/api/${GUILD_ID}/action`,{action,member_id:id,reason});
-    toast(`✅ ${labels[action]} appliqué à ${name}`);loadMembers();
+    toast(`${labels[action]} appliqué à ${name}`);loadMembers();
   });
 }
-
 
 async function loadSanctions(){
   const tb=document.getElementById('sanctions-tbody');
@@ -505,42 +673,39 @@ async function loadSanctions(){
 }
 function renderSanctions(s){
   const tb=document.getElementById('sanctions-tbody');
-  if(!s.length){tb.innerHTML='<tr><td colspan="5"><div class="empty"><div style="font-size:2rem">⚖️</div><p>Aucune sanction</p></div></td></tr>';return;}
+  if(!s.length){tb.innerHTML='<tr><td colspan="5"><div class="empty"><span class="empty-icon">⚖️</span><p>Aucune sanction</p></div></td></tr>';return;}
   const c={Ban:'badge-red',Kick:'badge-red',Mute:'badge-yellow',Warn:'badge-yellow',Unmute:'badge-green',Unban:'badge-green'};
   tb.innerHTML=s.slice(0,100).map(x=>`<tr>
-    <td><div class="member-cell"><div class="avatar-placeholder">${x.member_name[0]}</div>${x.member_name}</div></td>
+    <td><div class="member-cell"><div class="avatar-placeholder">${x.member_name[0]}</div><span class="member-name">${x.member_name}</span></div></td>
     <td><span class="badge ${c[x.type]||'badge-grey'}">${x.type}</span></td>
-    <td style="color:var(--grey);font-size:.82rem">${x.reason}</td>
-    <td style="color:var(--grey);font-size:.82rem">${x.by_name}</td>
+    <td style="color:var(--grey2);font-size:.82rem;max-width:200px">${x.reason}</td>
+    <td style="color:var(--grey2);font-size:.82rem">${x.by_name}</td>
     <td style="color:var(--grey);font-size:.78rem">${new Date(x.date).toLocaleDateString('fr')}</td>
   </tr>`).join('');
 }
-function filterSanctions(q){renderSanctions(allSanctions.filter(s=>s.member_name.toLowerCase().includes(q.toLowerCase())||s.reason.toLowerCase().includes(q.toLowerCase())));}
+function filterSanctions(q){renderSanctions(allSanctions.filter(s=>(s.member_name+s.reason).toLowerCase().includes(q.toLowerCase())));}
 
 async function loadTickets(){
-  const tb=document.getElementById('tickets-tbody');
-  const cols=7;
+  const tb=document.getElementById('tickets-tbody');const cols=7;
   tb.innerHTML=`<tr><td colspan="${cols}"><div class="empty"><div class="loader"></div></div></td></tr>`;
   const filter=document.getElementById('ticket-filter')?.value||'open';
   try{
-    const d=await apiGet(`/api/${GUILD_ID}/tickets?status=${filter}`);
-    const t=d.tickets||[];
-    if(!t.length){tb.innerHTML=`<tr><td colspan="${cols}"><div class="empty"><div style="font-size:2rem">🎫</div><p>Aucun ticket</p></div></td></tr>`;return;}
-    const tc={staff:'badge-pink',abus:'badge-red',cod:'badge-yellow',partenariat:'badge-green'};
+    const d=await apiGet(`/api/${GUILD_ID}/tickets?status=${filter}`);const t=d.tickets||[];
+    if(!t.length){tb.innerHTML=`<tr><td colspan="${cols}"><div class="empty"><span class="empty-icon">🎫</span><p>Aucun ticket</p></div></td></tr>`;return;}
+    const tc={staff:'badge-blue',abus:'badge-red',cod:'badge-yellow',partenariat:'badge-green'};
     const pc={urgent:'badge-red',haute:'badge-orange',normale:'badge-grey',basse:'badge-green'};
     const pe={urgent:'🔴',haute:'🟠',normale:'🔵',basse:'🟢'};
     tb.innerHTML=t.map(x=>{
-      const typeKey=(x.type||'').toLowerCase();
       const prio=x.priority||'normale';
       const date=x.opened_at?x.opened_at.slice(0,16).replace('T',' '):'?';
       const actions=x.status==='open'
-        ?`<button class="btn btn-danger" onclick="closeTicket('${x.channel_id}','${x.channel_name}')">🔒</button>`
-        :`<span style="color:var(--grey);font-size:.75rem">Fermé</span>`;
-      return `<tr>
-        <td><b>#${x.number||'?'}</b> <span style="color:var(--grey);font-size:.75rem">${x.channel_name}</span></td>
-        <td><span class="badge ${tc[typeKey]||'badge-grey'}">${x.type}</span></td>
-        <td><span class="badge ${pc[prio]||'badge-grey'}">${pe[prio]||''} ${prio}</span></td>
-        <td>${x.opener}</td>
+        ?`<button class="btn btn-danger btn-sm" onclick="closeTicket('${x.channel_id}','${x.channel_name}')">🔒 Fermer</button>`
+        :`<span class="badge badge-grey">Fermé</span>`;
+      return`<tr>
+        <td><b style="font-family:'Bebas Neue',sans-serif;font-size:1rem;color:var(--pink)">#${x.number||'?'}</b><br><span style="color:var(--grey);font-size:.7rem">${x.channel_name}</span></td>
+        <td><span class="badge ${tc[(x.type||'').toLowerCase()]||'badge-grey'}">${x.type}</span></td>
+        <td><span class="badge ${pc[prio]}">${pe[prio]} ${prio}</span></td>
+        <td style="font-weight:500">${x.opener}</td>
         <td style="color:${x.claimed_by?'var(--green)':'var(--grey)'}">${x.claimed_by||'—'}</td>
         <td style="color:var(--grey);font-size:.75rem">${date}</td>
         <td>${actions}</td>
@@ -548,72 +713,63 @@ async function loadTickets(){
     }).join('');
   }catch(e){}
 }
-async function closeTicket(id,name){openModal('Fermer ticket',`Fermer #${name} ?`,async()=>{await apiPost(`/api/${GUILD_ID}/tickets/${id}/close`);toast('✅ Ticket fermé');loadTickets();});}
+async function closeTicket(id,name){openModal('Fermer le ticket',`Fermer le ticket #${name} ?`,async()=>{await apiPost(`/api/${GUILD_ID}/tickets/${id}/close`);toast('Ticket fermé');loadTickets();});}
 
 async function loadShadowban(){
   const tb=document.getElementById('shadowban-tbody');
   tb.innerHTML='<tr><td colspan="4"><div class="empty"><div class="loader"></div></div></td></tr>';
-  try{
-    const d=await apiGet(`/api/${GUILD_ID}/security/shadowbans`);
-    const list=d.shadowbans||[];
-    if(!list.length){tb.innerHTML='<tr><td colspan="4"><div class="empty"><div style="font-size:2rem">👻</div><p>Aucun shadowban actif</p></div></td></tr>';return;}
-    tb.innerHTML=list.map(x=>`<tr>
-      <td><div style="display:flex;align-items:center;gap:.6rem">${x.avatar?`<img src="${x.avatar}" style="width:28px;height:28px;border-radius:50%">`:''}<span>${x.member_name}</span></div></td>
-      <td style="color:var(--grey)">${x.reason}</td>
-      <td style="color:var(--grey);font-size:.75rem">${x.date}</td>
-      <td><button class="btn btn-danger" onclick="unshadowban('${x.member_id}','${x.member_name}')">Lever</button></td>
-    </tr>`).join('');
-  }catch(e){}
+  try{const d=await apiGet(`/api/${GUILD_ID}/security/shadowbans`);const list=d.shadowbans||[];
+  if(!list.length){tb.innerHTML='<tr><td colspan="4"><div class="empty"><span class="empty-icon">👻</span><p>Aucun shadowban actif</p></div></td></tr>';return;}
+  tb.innerHTML=list.map(x=>`<tr>
+    <td><div class="member-cell">${x.avatar?`<img class="avatar" src="${x.avatar}">`:`<div class="avatar-placeholder">${x.member_name[0]}</div>`}<span class="member-name">${x.member_name}</span></div></td>
+    <td style="color:var(--grey2)">${x.reason}</td>
+    <td style="color:var(--grey);font-size:.75rem">${x.date}</td>
+    <td><button class="btn btn-warn btn-sm" onclick="unshadowban('${x.member_id}','${x.member_name}')">Lever</button></td>
+  </tr>`).join('');}catch(e){}
 }
-async function unshadowban(id,name){openModal('Lever le shadowban',`Lever le shadowban de ${name} ?`,async()=>{await apiDelete(`/api/${GUILD_ID}/security/shadowbans/${id}`);toast('✅ Shadowban levé');loadShadowban();});}
+async function unshadowban(id,name){openModal('Lever le shadowban',`Lever le shadowban de ${name} ?`,async()=>{await apiDelete(`/api/${GUILD_ID}/security/shadowbans/${id}`);toast('Shadowban levé');loadShadowban();});}
 
 async function loadWatchlist(){
   const tb=document.getElementById('watchlist-tbody');
   tb.innerHTML='<tr><td colspan="5"><div class="empty"><div class="loader"></div></div></td></tr>';
-  try{
-    const d=await apiGet(`/api/${GUILD_ID}/security/watchlist`);
-    const list=d.watchlist||[];
-    if(!list.length){tb.innerHTML='<tr><td colspan="5"><div class="empty"><div style="font-size:2rem">👁️</div><p>Aucun membre en watchlist</p></div></td></tr>';return;}
-    tb.innerHTML=list.map(x=>`<tr>
-      <td><div style="display:flex;align-items:center;gap:.6rem">${x.avatar?`<img src="${x.avatar}" style="width:28px;height:28px;border-radius:50%">`:''}<span>${x.member_name}</span></div></td>
-      <td style="color:var(--grey)">${x.reason}</td>
-      <td style="color:var(--grey)">${x.by_name}</td>
-      <td style="color:var(--grey);font-size:.75rem">${x.date}</td>
-      <td><button class="btn btn-danger" onclick="unwatch('${x.member_id}','${x.member_name}')">Retirer</button></td>
-    </tr>`).join('');
-  }catch(e){}
+  try{const d=await apiGet(`/api/${GUILD_ID}/security/watchlist`);const list=d.watchlist||[];
+  if(!list.length){tb.innerHTML='<tr><td colspan="5"><div class="empty"><span class="empty-icon">👁️</span><p>Aucun membre surveillé</p></div></td></tr>';return;}
+  tb.innerHTML=list.map(x=>`<tr>
+    <td><div class="member-cell">${x.avatar?`<img class="avatar" src="${x.avatar}">`:`<div class="avatar-placeholder">${x.member_name[0]}</div>`}<span class="member-name">${x.member_name}</span></div></td>
+    <td style="color:var(--grey2)">${x.reason}</td>
+    <td style="color:var(--grey2)">${x.by_name}</td>
+    <td style="color:var(--grey);font-size:.75rem">${x.date}</td>
+    <td><button class="btn btn-danger btn-sm" onclick="unwatch('${x.member_id}','${x.member_name}')">Retirer</button></td>
+  </tr>`).join('');}catch(e){}
 }
-async function unwatch(id,name){openModal('Retirer de la watchlist',`Retirer ${name} de la surveillance ?`,async()=>{await apiDelete(`/api/${GUILD_ID}/security/watchlist/${id}`);toast('✅ Retiré de la watchlist');loadWatchlist();});}
+async function unwatch(id,name){openModal('Retirer de la watchlist',`Retirer ${name} ?`,async()=>{await apiDelete(`/api/${GUILD_ID}/security/watchlist/${id}`);toast('Retiré de la watchlist');loadWatchlist();});}
 
 async function loadReports(){
   const tb=document.getElementById('reports-tbody');
   tb.innerHTML='<tr><td colspan="4"><div class="empty"><div class="loader"></div></div></td></tr>';
-  try{
-    const d=await apiGet(`/api/${GUILD_ID}/security/reports`);
-    const list=(d.reports||[]).slice().reverse();
-    if(!list.length){tb.innerHTML='<tr><td colspan="4"><div class="empty"><div style="font-size:2rem">🚨</div><p>Aucun signalement</p></div></td></tr>';return;}
-    tb.innerHTML=list.map(x=>`<tr>
-      <td><b>${x.target_name}</b></td>
-      <td style="color:var(--grey)">${x.reporter_name}</td>
-      <td>${x.reason}</td>
-      <td style="color:var(--grey);font-size:.75rem">${(x.date||'').slice(0,16).replace('T',' ')}</td>
-    </tr>`).join('');
-  }catch(e){}
+  try{const d=await apiGet(`/api/${GUILD_ID}/security/reports`);const list=(d.reports||[]).slice().reverse();
+  if(!list.length){tb.innerHTML='<tr><td colspan="4"><div class="empty"><span class="empty-icon">🚨</span><p>Aucun signalement</p></div></td></tr>';return;}
+  tb.innerHTML=list.map(x=>`<tr>
+    <td><b>${x.target_name}</b></td>
+    <td style="color:var(--grey2)">${x.reporter_name}</td>
+    <td>${x.reason}</td>
+    <td style="color:var(--grey);font-size:.75rem">${(x.date||'').slice(0,16).replace('T',' ')}</td>
+  </tr>`).join('');}catch(e){}
 }
 
 async function loadRoles(){
   const tb=document.getElementById('roles-tbody');
   tb.innerHTML='<tr><td colspan="3"><div class="empty"><div class="loader"></div></div></td></tr>';
   try{const d=await apiGet(`/api/${GUILD_ID}/roles`);const r=d.roles||[];
-  if(!r.length){tb.innerHTML='<tr><td colspan="3"><div class="empty"><div style="font-size:2rem">🎭</div><p>Aucun rôle</p></div></td></tr>';return;}
+  if(!r.length){tb.innerHTML='<tr><td colspan="3"><div class="empty"><span class="empty-icon">🎭</span><p>Aucun rôle</p></div></td></tr>';return;}
   tb.innerHTML=r.map(x=>`<tr>
-    <td><div style="display:flex;align-items:center;gap:.6rem"><div style="width:12px;height:12px;border-radius:50%;background:${x.color}"></div>${x.name}</div></td>
-    <td><span class="badge badge-grey">${x.members}</span></td>
-    <td><button class="btn btn-danger" onclick="deleteRole('${x.id}','${x.name}')">🗑️</button></td>
+    <td><div style="display:flex;align-items:center;gap:.7rem"><div style="width:11px;height:11px;border-radius:50%;background:${x.color};box-shadow:0 0 8px ${x.color}60"></div><span style="font-weight:500">${x.name}</span></div></td>
+    <td><span class="badge badge-grey">${x.members} membres</span></td>
+    <td><button class="btn btn-danger btn-sm" onclick="deleteRole('${x.id}','${x.name}')">🗑️</button></td>
   </tr>`).join('');}catch(e){}
 }
-async function createRole(){const n=document.getElementById('role-name-input').value.trim();if(!n)return;await apiPost(`/api/${GUILD_ID}/roles/create`,{name:n});toast('✅ Rôle créé');loadRoles();}
-async function deleteRole(id,name){openModal('Supprimer rôle',`Supprimer "${name}" ?`,async()=>{await apiPost(`/api/${GUILD_ID}/roles/${id}/delete`);toast('✅ Rôle supprimé');loadRoles();});}
+async function createRole(){const n=document.getElementById('role-name-input').value.trim();if(!n)return;await apiPost(`/api/${GUILD_ID}/roles/create`,{name:n});toast('Rôle créé');loadRoles();}
+async function deleteRole(id,name){openModal('Supprimer le rôle',`Supprimer "${name}" définitivement ?`,async()=>{await apiPost(`/api/${GUILD_ID}/roles/${id}/delete`);toast('Rôle supprimé');loadRoles();});}
 
 async function loadRanks(){
   const div=document.getElementById('ranks-content');
@@ -621,8 +777,12 @@ async function loadRanks(){
   try{const d=await apiGet(`/api/${GUILD_ID}/ranks`);const ranks=d.ranks||[];
   div.innerHTML='<div class="rank-grid">'+ranks.map(r=>`
     <div class="rank-card">
-      <div class="rank-header"><div class="rank-badge">${r.grade}</div><div><b style="font-family:Syne">${r.titre}</b><div style="font-size:.75rem;color:var(--grey)">${r.members.length} membre(s)</div></div></div>
-      <div class="rank-members">${r.members.map(m=>`<div class="rank-member"><div class="avatar-placeholder" style="width:22px;height:22px;font-size:.6rem">${m.display_name[0]}</div>${m.display_name}</div>`).join('')||'<span style="color:var(--grey);font-size:.82rem">Aucun</span>'}</div>
+      <div class="rank-badge">${r.grade}</div>
+      <div style="flex:1">
+        <b style="font-family:'Syne',sans-serif;font-size:.9rem">${r.titre}</b>
+        <div style="font-size:.72rem;color:var(--grey2);margin-top:.1rem">${r.members.length} membre(s)</div>
+        <div class="rank-members">${r.members.map(m=>`<div class="rank-member"><div class="avatar-placeholder" style="width:22px;height:22px;font-size:.6rem">${m.display_name[0]}</div>${m.display_name}</div>`).join('')||'<span style="color:var(--grey);font-size:.78rem">Aucun membre</span>'}</div>
+      </div>
     </div>`).join('')+'</div>';}catch(e){}
 }
 
@@ -630,24 +790,23 @@ async function loadVoice(){
   const grid=document.getElementById('voice-grid');
   grid.innerHTML='<div class="empty"><div class="loader"></div></div>';
   try{const d=await apiGet(`/api/${GUILD_ID}/voice`);const active=(d.channels||[]).filter(c=>c.members.length);
-  if(!active.length){grid.innerHTML='<div class="empty"><div style="font-size:2rem">🔇</div><p>Aucun membre en vocal</p></div>';return;}
+  if(!active.length){grid.innerHTML='<div class="empty"><span class="empty-icon">🔇</span><p>Aucun membre en vocal</p></div>';return;}
   grid.innerHTML=active.map(ch=>`
     <div class="voice-channel">
       <div class="voice-channel-name">🔊 ${ch.name} <span class="badge badge-green">${ch.members.length}</span></div>
       ${ch.members.map(m=>`<div class="voice-member">
         <div style="display:flex;align-items:center;gap:.6rem">
           <div class="avatar-placeholder" style="width:28px;height:28px;font-size:.65rem">${m.name[0]}</div>
-          <span style="font-size:.85rem">${m.name}</span>
-          ${m.muted?'<span class="badge badge-red" style="font-size:.55rem">MUTE</span>':''}
+          <span style="font-size:.83rem;font-weight:500">${m.name}</span>
+          ${m.muted?'<span class="badge badge-red" style="font-size:.55rem">MUTED</span>':''}
         </div>
         <div style="display:flex;gap:.3rem">
-          <button class="btn btn-warn" style="padding:.3rem .6rem" onclick="openMoveModal('${m.id}','${m.name}','${ch.id}')">📤</button>
-          <button class="btn btn-danger" style="padding:.3rem .6rem" onclick="dcMember('${m.id}','${m.name}')">✖</button>
+          <button class="btn btn-warn btn-sm" onclick="openMoveModal('${m.id}','${m.name}','${ch.id}')">📤</button>
+          <button class="btn btn-danger btn-sm" onclick="dcMember('${m.id}','${m.name}')">✕</button>
         </div>
       </div>`).join('')}
     </div>`).join('');}catch(e){}
 }
-
 async function openMoveModal(memberId,memberName,currentChId){
   const d=await apiGet(`/api/${GUILD_ID}/voice`);
   const channels=(d.channels||[]).filter(c=>c.id!==currentChId);
@@ -655,11 +814,11 @@ async function openMoveModal(memberId,memberName,currentChId){
   openModal(`Déplacer ${memberName}`,'Choisir le salon de destination :',async()=>{
     const chId=document.getElementById('move-channel-select').value;
     await apiPost(`/api/${GUILD_ID}/voice/move`,{member_id:memberId,channel_id:chId});
-    toast(`✅ ${memberName} déplacé`);loadVoice();
+    toast(`${memberName} déplacé`);loadVoice();
   },'btn-primary',`<div class="form-group"><label>Salon vocal</label><select class="form-control" id="move-channel-select">${opts}</select></div>`);
   document.getElementById('modal-confirm').textContent='Déplacer';
 }
-async function dcMember(id,name){openModal('Déconnecter',`Déconnecter ${name} du vocal ?`,async()=>{await apiPost(`/api/${GUILD_ID}/voice/disconnect`,{member_id:id});toast(`✅ ${name} déconnecté`);loadVoice();});}
+async function dcMember(id,name){openModal('Déconnecter',`Déconnecter ${name} du vocal ?`,async()=>{await apiPost(`/api/${GUILD_ID}/voice/disconnect`,{member_id:id});toast(`${name} déconnecté`);loadVoice();});}
 
 async function loadChannels(){
   try{const d=await apiGet(`/api/${GUILD_ID}/channels`);
@@ -677,43 +836,55 @@ async function sendMessage(){
   const body={channel_id:channelId,content};
   if(msgType==='embed'){body.embed=true;body.embed_title=document.getElementById('msg-embed-title').value;body.color=document.getElementById('msg-color').value;}
   await apiPost(`/api/${GUILD_ID}/send`,body);
-  toast('✅ Message envoyé');document.getElementById('msg-content').value='';
+  toast('Message envoyé');document.getElementById('msg-content').value='';
 }
 
 async function loadLogs(){
   try{const d=await apiGet(`/api/${GUILD_ID}/logs`);const logs=d.logs||[];
   const c=document.getElementById('log-container');
-  if(!logs.length){c.innerHTML='<div class="empty"><div style="font-size:2rem">📋</div><p>Aucun log récent</p></div>';return;}
-  const col={join:'green',leave:'yellow',delete:'red',sanction:'pink'};
-  c.innerHTML=logs.map(l=>`<div class="log-entry ${l.type}"><span class="log-time">${new Date(l.time).toLocaleTimeString('fr')}</span><span style="color:var(--${col[l.type]||'white'})">${l.content}</span></div>`).join('');}catch(e){}
+  if(!logs.length){c.innerHTML='<div class="empty"><span class="empty-icon">📋</span><p>Aucun log récent</p></div>';return;}
+  const col={join:'var(--green)',leave:'var(--gold)',delete:'var(--red)',sanction:'var(--pink)'};
+  c.innerHTML=logs.map(l=>`<div class="log-entry ${l.type}"><span class="log-time">${new Date(l.time).toLocaleTimeString('fr')}</span><span style="color:${col[l.type]||'var(--white)'}">${l.content}</span></div>`).join('');
+  c.scrollTop=c.scrollHeight;}catch(e){}
 }
 
 async function loadXP(){
   const tb=document.getElementById('xp-tbody');
   tb.innerHTML='<tr><td colspan="5"><div class="empty"><div class="loader"></div></div></td></tr>';
   try{const d=await apiGet(`/api/${GUILD_ID}/xp`);const lb=d.leaderboard||[];const maxXP=lb[0]?.xp||1;
-  tb.innerHTML=lb.slice(0,50).map((m,i)=>{const pct=Math.round(m.xp/maxXP*100);const med=i===0?'🥇':i===1?'🥈':i===2?'🥉':`#${i+1}`;
-    return`<tr><td style="font-family:'Bebas Neue',sans-serif;color:var(--pink)">${med}</td>
-    <td><div class="member-cell"><div class="avatar-placeholder">${m.member_name[0]}</div>${m.member_name}</div></td>
-    <td><span class="badge badge-pink">Niv. ${m.level}</span></td>
-    <td style="font-family:'Bebas Neue',sans-serif">${m.xp.toLocaleString('fr')}</td>
-    <td><div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div></td></tr>`;}).join('');}catch(e){}
+  tb.innerHTML=lb.slice(0,50).map((m,i)=>{const pct=Math.round(m.xp/maxXP*100);const med=i===0?'🥇':i===1?'🥈':i===2?'🥉':`<span style="color:var(--grey)">#${i+1}</span>`;
+    return`<tr>
+      <td style="font-family:'Bebas Neue',sans-serif;font-size:1.1rem">${med}</td>
+      <td>${memberCell(m)}</td>
+      <td><span class="badge badge-pink">Niv. ${m.level}</span></td>
+      <td style="font-family:'DM Mono',monospace;font-size:.8rem;color:var(--pink)">${m.xp.toLocaleString('fr')}</td>
+      <td style="min-width:100px"><div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div></td>
+    </tr>`;}).join('');}catch(e){}
 }
 
 async function loadTrophees(){
   const tb=document.getElementById('trophees-tbody');
   tb.innerHTML='<tr><td colspan="4"><div class="empty"><div class="loader"></div></div></td></tr>';
   try{const d=await apiGet(`/api/${GUILD_ID}/trophees`);
-  tb.innerHTML=(d.trophees||[]).slice(0,50).map((m,i)=>{const med=i===0?'🥇':i===1?'🥈':i===2?'🥉':`#${i+1}`;
-    return`<tr><td style="color:var(--gold)">${med}</td><td><div class="member-cell"><div class="avatar-placeholder">${m.member_name[0]}</div>${m.member_name}</div></td>
-    <td><span class="badge badge-yellow">⭐ ${m.votes}</span></td><td style="color:var(--grey)">🎙️ ${m.voice_hours}h</td></tr>`;}).join('');}catch(e){}
+  tb.innerHTML=(d.trophees||[]).slice(0,50).map((m,i)=>{const med=i===0?'🥇':i===1?'🥈':i===2?'🥉':`<span style="color:var(--grey)">#${i+1}</span>`;
+    return`<tr>
+      <td style="font-family:'Bebas Neue',sans-serif;font-size:1.1rem">${med}</td>
+      <td>${memberCell(m)}</td>
+      <td><span class="badge badge-yellow">⭐ ${m.votes}</span></td>
+      <td style="color:var(--grey2);font-size:.82rem">🎙️ ${m.voice_hours}h</td>
+    </tr>`;}).join('');}catch(e){}
 }
 
 async function loadGiveaways(){
   const tb=document.getElementById('giveaways-tbody');
   try{const d=await apiGet(`/api/${GUILD_ID}/giveaways`);const gws=d.giveaways||[];
-  if(!gws.length){tb.innerHTML='<tr><td colspan="4"><div class="empty"><div style="font-size:2rem">🎉</div><p>Aucun giveaway</p></div></td></tr>';return;}
-  tb.innerHTML=gws.map(g=>`<tr><td>${g.prize}</td><td>${g.winners}</td><td>${g.ended?'<span class="badge badge-grey">Terminé</span>':'<span class="badge badge-green">Actif</span>'}</td><td style="color:var(--grey);font-size:.8rem">${new Date(parseFloat(g.end_time)*1000).toLocaleString('fr')}</td></tr>`).join('');}catch(e){}
+  if(!gws.length){tb.innerHTML='<tr><td colspan="4"><div class="empty"><span class="empty-icon">🎉</span><p>Aucun giveaway</p></div></td></tr>';return;}
+  tb.innerHTML=gws.map(g=>`<tr>
+    <td style="font-weight:500">${g.prize}</td>
+    <td><span class="badge badge-grey">${g.winners}</span></td>
+    <td>${g.ended?'<span class="badge badge-grey">Terminé</span>':'<span class="badge badge-green">● Actif</span>'}</td>
+    <td style="color:var(--grey);font-size:.8rem">${new Date(parseFloat(g.end_time)*1000).toLocaleString('fr')}</td>
+  </tr>`).join('');}catch(e){}
 }
 async function createGiveaway(){
   const prize=document.getElementById('gw-prize').value.trim();const channel=document.getElementById('gw-channel').value;
@@ -725,13 +896,16 @@ async function createGiveaway(){
 async function loadConfig(){
   const div=document.getElementById('config-content');
   try{const d=await apiGet(`/api/${GUILD_ID}/config`);const cfg=d.config||{};
-  div.innerHTML=`<div class="config-section"><h3>📋 Configuration</h3><div class="form-grid">${
-    Object.keys(cfg).length?Object.entries(cfg).map(([k,v])=>`<div class="form-group"><label>${k}</label><input type="text" class="form-control" value="${v}" onchange="updateConfig('${k}',this.value)"></div>`).join(''):'<p style="color:var(--grey)">Aucune configuration.</p>'
+  div.innerHTML=`<div class="card"><div class="card-title">⚙️ Paramètres</div><div class="form-grid">${
+    Object.keys(cfg).length?Object.entries(cfg).map(([k,v])=>`<div class="form-group"><label>${k}</label><input type="text" class="form-control" value="${v}" onchange="updateConfig('${k}',this.value)"></div>`).join(''):'<p style="color:var(--grey2)">Aucune configuration disponible.</p>'
   }</div></div>`;}catch(e){}
 }
-async function updateConfig(key,value){await apiPost(`/api/${GUILD_ID}/config`,{[key]:value});toast(`✅ ${key} mis à jour`);}
+async function updateConfig(key,value){await apiPost(`/api/${GUILD_ID}/config`,{[key]:value});toast(`${key} mis à jour`);}
 
-document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal();if(e.key==='Enter'&&document.getElementById('login-screen').style.display!=='none')doLogin();});
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape')closeModal();
+  if(e.key==='Enter'&&document.getElementById('login-screen').style.display!=='none')doLogin();
+});
 </script>
 </body>
 </html>
