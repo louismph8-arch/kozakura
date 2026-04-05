@@ -6806,7 +6806,7 @@ def api_set_rank(guild_id):
 
 # ── Lancement Flask dans un thread ────────────────────────────────────────────
 def run_flask():
-    port = int(os.getenv("PORT", 5000))
+    port = int(os.getenv("PORT", 8080))
     app_flask.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 async def main():
