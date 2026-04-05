@@ -95,9 +95,6 @@ async def detect_conflict(content: str) -> bool:
 TOKEN  = os.getenv("DISCORD_TOKEN", "")
 PREFIX = "!"
 
-# Debug Railway — à supprimer après
-print(f"[DEBUG] TOKEN lu: {'OK ('+str(len(TOKEN))+' chars)' if TOKEN else 'VIDE — variable DISCORD_TOKEN non trouvée'}")
-
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None)
 
