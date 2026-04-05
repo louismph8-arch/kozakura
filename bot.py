@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 
 # ─── GROQ AI ──────────────────────────────────────────────────────────────────
-GROQ_API_KEY   = "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"
+GROQ_API_KEY   = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL     = "llama-3.1-8b-instant"
 GROQ_URL       = "https://api.groq.com/openai/v1/chat/completions"
 
@@ -92,7 +92,7 @@ async def detect_conflict(content: str) -> bool:
 
 
 # ─── CONFIGURATION ────────────────────────────────────────────────────────────
-TOKEN  = "MTQ3ODQzOTE3NzMyMTE4OTQ3Nw.GDC1sn.yhwIGbCBcCxEvflU_pA4bKhhws3cF6PXKc8KiU"
+TOKEN  = os.getenv("DISCORD_TOKEN", "")
 PREFIX = "!"
 
 intents = discord.Intents.all()
