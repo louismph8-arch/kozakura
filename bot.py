@@ -14,10 +14,11 @@ import json, os, re, time, asyncio, aiohttp
 from datetime import datetime, timedelta
 from collections import defaultdict
 
-# ─── GROQ AI ──────────────────────────────────────────────────────────────────
-GROQ_API_KEY   = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL     = "llama-3.1-8b-instant"
-GROQ_URL       = "https://api.groq.com/openai/v1/chat/completions"
+# ─── ANTHROPIC AI (Claude) ────────────────────────────────────────────────────
+import anthropic as _anthropic
+
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+CLAUDE_MODEL      = "claude-haiku-4-5"  # Rapide et économique pour un bot Discord
 
 # Historique des conversations par utilisateur {user_id: [messages]}
 ai_conversations = {}
@@ -36,12 +37,12 @@ expliquer des concepts, et modérer intelligemment.
 Tu connais les commandes du bot : !ban, !kick, !mute, !warn, !rank, !help, etc.
 Réponds de manière concise (max 300 mots) et adaptée à Discord.
 Si quelqu'un semble en conflit ou agressif, reste calme et professionnel.
-Ne mentionne jamais que tu es une IA Groq/Llama — tu es Kozakura."""
+Ne mentionne jamais que tu es une IA Anthropic/Claude — tu es Kozakura."""
 
-async def call_groq(messages: list, member_ctx: dict = None) -> str:
-    """Appelle l'API Groq et retourne la réponse"""
-    if not GROQ_API_KEY:
-        return "❌ Clé API Groq non configurée."
+async def call_claude(messages: list, member_ctx: dict = None) -> str:
+    """Appelle l'API Claude (Anthropic) et retourne la réponse"""
+    if not ANTHROPIC_API_KEY:
+        return "❌ Clé API Anthropic non configurée."
 
     # Système adaptatif selon le profil du membre
     system = SYSTEM_PROMPT
@@ -56,27 +57,24 @@ async def call_groq(messages: list, member_ctx: dict = None) -> str:
         if sancs > 3:
             system += "\nCe membre a eu des sanctions par le passé. Reste professionnel et neutre."
 
-    payload = {
-        "model": GROQ_MODEL,
-        "messages": [{"role": "system", "content": system}] + messages,
-        "max_tokens": 500,
-        "temperature": 0.7
-    }
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(GROQ_URL, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data["choices"][0]["message"]["content"].strip()
-                else:
-                    return f"❌ Erreur API ({resp.status})"
-    except asyncio.TimeoutError:
-        return "⏰ Délai dépassé, réessaie !"
+        client = _anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        response = await client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=500,
+            system=system,
+            messages=messages
+        )
+        return response.content[0].text.strip()
+    except _anthropic.BadRequestError as e:
+        print(f"[Claude] BadRequest: {e.message}")
+        return f"❌ Requête invalide : {str(e.message)[:150]}"
+    except _anthropic.AuthenticationError:
+        return "❌ Clé API Anthropic invalide."
+    except _anthropic.RateLimitError:
+        return "⏰ Limite de requêtes atteinte, réessaie dans un moment !"
+    except _anthropic.APIConnectionError:
+        return "❌ Impossible de contacter l'API Claude."
     except Exception as e:
         return f"❌ Erreur : {str(e)[:100]}"
 
@@ -506,10 +504,23 @@ async def on_member_join(member):
     if len(raid_tracker) >= get_cfg(guild.id, "raid_threshold", 10):
         try:
             await member.kick(reason="Anti-raid automatique")
-            e = discord.Embed(title="🚨 ANTI-RAID", description=f"{member} expulsé",
-                color=discord.Color.dark_red(), timestamp=datetime.utcnow())
-            await log_security(guild, e)
-        except Exception: pass
+        except Exception:
+            pass
+        # Lockdown automatique si pas déjà actif
+        raid_count = len(raid_tracker)
+        await trigger_lockdown(
+            guild,
+            raison=f"Raid détecté — {raid_count} joins en 10 secondes",
+            triggered_by="🤖 Anti-Raid automatique"
+        )
+        e = discord.Embed(
+            title="🚨 ANTI-RAID DÉCLENCHÉ",
+            description=f"{member.mention} expulsé\n**{raid_count}** joins en 10 secondes",
+            color=discord.Color.dark_red(), timestamp=datetime.utcnow()
+        )
+        e.add_field(name="🔒 Lockdown", value="Activé automatiquement")
+        e.set_footer(text="Kozakura Security")
+        await log_security(guild, e)
         return
     ar = get_cfg(guild.id, "auto_role")
     if ar:
@@ -801,7 +812,7 @@ async def on_message(message):
         return
 
     # ── Détection IA contextuelle (mots dangereux en contexte) ───────────────
-    if GROQ_API_KEY and len(message.content) > 20:
+    if ANTHROPIC_API_KEY and len(message.content) > 20:
         CONTEXT_PATTERNS = [
             "je vais te", "je vais vous", "t'es mort", "tu es mort",
             "je te retrouve", "adresse", "tu vas voir", "je vais venir"
@@ -919,7 +930,7 @@ async def on_message(message):
         if sec_ch:
             await sec_ch.send(content=f"💙 {mention_staff} — Alerte bien-être, intervention discrète recommandée.", embed=e_distress)
         # MP chaleureux via IA
-        if GROQ_API_KEY:
+        if ANTHROPIC_API_KEY:
             support_prompt = [{
                 "role": "user",
                 "content": (
@@ -929,7 +940,7 @@ async def on_message(message):
                     f"Ton style : doux, empathique, jamais condescendant. Pas d'emojis excessifs."
                 )
             }]
-            support_msg = await call_groq(support_prompt)
+            support_msg = await call_claude(support_prompt)
             try:
                 e_dm = discord.Embed(
                     title=f"🌸 Kozakura te parle — {guild.name}",
@@ -942,7 +953,7 @@ async def on_message(message):
 
     # ── Traduction automatique ────────────────────────────────────────────────
     if (
-        GROQ_API_KEY
+        ANTHROPIC_API_KEY
         and len(message.content.split()) >= 5
         and not str(message.channel.id) in tickets_db.get(str(guild.id), {})
         and autotrad_db.get(str(guild.id), {}).get(str(message.channel.id), False)
@@ -956,7 +967,7 @@ async def on_message(message):
             )
         }]
         try:
-            trad_response = await call_groq(detect_prompt)
+            trad_response = await call_claude(detect_prompt)
             if trad_response and not trad_response.lower().startswith("oui"):
                 # Parser la réponse
                 if "TRADUCTION:" in trad_response:
@@ -1015,7 +1026,7 @@ async def on_message(message):
     if any(ign in channel_low for ign in AI_IGNORE_CHANNELS):
         return
 
-    if not GROQ_API_KEY:
+    if not ANTHROPIC_API_KEY:
         return
 
     # Conditions pour répondre :
@@ -1107,7 +1118,7 @@ async def on_message(message):
         level = get_level(xp_db.get(gid, {}).get(uid, 0))
         sancs = len(sanctions_db.get(gid, {}).get(uid, []))
         member_ctx = {"days": days, "level": level, "sanctions": sancs}
-        response = await call_groq(ai_conversations[uid], member_ctx=member_ctx)
+        response = await call_claude(ai_conversations[uid], member_ctx=member_ctx)
 
     # Sauvegarder la réponse dans l'historique
     ai_conversations[uid].append({"role": "assistant", "content": response})
@@ -1229,7 +1240,7 @@ async def ban(ctx, member: discord.Member, *, reason="Aucune raison"):
     await dm(member, "🔨 Tu as été banni",
         f"**Serveur :** {ctx.guild.name}\n**Raison :** {reason}\n\nSi tu penses que c'est une erreur, contacte un administrateur.",
         color=discord.Color.dark_red())
-    await member.ban(reason=reason)
+    await member.ban(reason=reason, delete_message_days=7)
     e = await log_sanction(ctx.guild, member, "Ban", reason, ctx.author)
     await ctx.send(embed=e)
 
@@ -2011,23 +2022,28 @@ async def setticketlog(ctx, *, arg: str):
 async def ticketpanel(ctx):
     """Envoie le panel de tickets avec les 4 boutons"""
     e = discord.Embed(
-        title="📩 Contacter le Support de Kozakura",
+        title="🌸  Kozakura — Support & Contact",
         description=(
-            "🌟 **Le support du serveur est disponible 24H/24 et 7J/7** 🌟\n\n"
-            "**◈ Les Tickets :**\n"
-            "Il y a 4 catégories de tickets mis à votre disposition :\n\n"
-            "⚒️ **Les tickets Gestion Staff :** Pour devenir staff, réclamer un rank up ou récupérer des rôles.\n\n"
-            "🔴 **Les tickets Gestion Abus :** Pour signaler un abus ou un conflit avec un membre ou staff. "
-            "Défends ton innocence si tu es muté injustement.\n\n"
-            "👑 **Les tickets B#tch :** Pour contacter la direction du serveur. "
-            "Décalages, fusions, fournisseurs...\n\n"
-            "🤝 **Les tickets Partenariat :** Pour proposer un partenariat avec le serveur.\n\n"
-            "⚠️ *Toute demande concernant les giveaways et concours nitro ne sont pas pris en charge.*\n\n"
-            "─ Support Kozakura"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "**Bienvenue au support officiel de Kozakura.**\n"
+            "Notre équipe est disponible **24h/24 · 7j/7** pour vous aider.\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "**⚒️  Gestion Staff**\n"
+            "` ` Candidatures, rank-up, récupération de rôles.\n\n"
+            "**🛡️  Gestion Abus**\n"
+            "` ` Signaler un abus, conflit ou contester une sanction.\n\n"
+            "**👑  Direction**\n"
+            "` ` Décalages, fusions, sujets stratégiques — C.O.D uniquement.\n\n"
+            "**🤝  Partenariat**\n"
+            "` ` Proposer un partenariat avec Kozakura.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "⚠️ *Les demandes hors-sujet ou abusives seront ignorées.*"
         ),
-        color=discord.Color.blurple()
+        color=discord.Color.from_rgb(255, 182, 193)
     )
-    e.set_footer(text=ctx.guild.name)
+    if ctx.guild.icon:
+        e.set_thumbnail(url=ctx.guild.icon.url)
+    e.set_footer(text="Kozakura Support  •  Cliquez sur un bouton ci-dessous")
     await ctx.send(embed=e, view=TicketPanelView())
     try: await ctx.message.delete()
     except Exception: pass
@@ -2036,24 +2052,47 @@ async def ticketpanel(ctx):
 class TicketPanelView(discord.ui.View):
     def __init__(self): super().__init__(timeout=None)
 
-    @discord.ui.button(label="⚒️ Contacter un Gestion Staff", style=discord.ButtonStyle.blurple, custom_id="ticket_staff", row=0)
+    @discord.ui.button(label="Gestion Staff", emoji="⚒️", style=discord.ButtonStyle.blurple, custom_id="ticket_staff", row=0)
     async def btn_staff(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await open_ticket(interaction, "staff")
+        await interaction.response.send_modal(TicketOpenModal("staff"))
 
-    @discord.ui.button(label="🔴 Contacter un Gestion Abus", style=discord.ButtonStyle.red, custom_id="ticket_abus", row=0)
+    @discord.ui.button(label="Gestion Abus", emoji="🛡️", style=discord.ButtonStyle.red, custom_id="ticket_abus", row=0)
     async def btn_abus(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await open_ticket(interaction, "abus")
+        await interaction.response.send_modal(TicketOpenModal("abus"))
 
-    @discord.ui.button(label="👑 Contacter B#tch", style=discord.ButtonStyle.grey, custom_id="ticket_cod", row=1)
+    @discord.ui.button(label="Direction", emoji="👑", style=discord.ButtonStyle.grey, custom_id="ticket_cod", row=1)
     async def btn_cod(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await open_ticket(interaction, "cod")
+        await interaction.response.send_modal(TicketOpenModal("cod"))
 
-    @discord.ui.button(label="🤝 Contacter Partenariat", style=discord.ButtonStyle.green, custom_id="ticket_partenariat", row=1)
+    @discord.ui.button(label="Partenariat", emoji="🤝", style=discord.ButtonStyle.green, custom_id="ticket_partenariat", row=1)
     async def btn_partenariat(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await open_ticket(interaction, "partenariat")
+        await interaction.response.send_modal(TicketOpenModal("partenariat"))
+
+# ─── MODAL D'OUVERTURE DE TICKET ─────────────────────────────────────────────
+class TicketOpenModal(discord.ui.Modal):
+    subject = discord.ui.TextInput(
+        label="Sujet",
+        placeholder="Résumé en une ligne de ta demande...",
+        style=discord.TextStyle.short,
+        required=True, max_length=100)
+    details = discord.ui.TextInput(
+        label="Détails (optionnel)",
+        placeholder="Décris ta situation en détail...",
+        style=discord.TextStyle.paragraph,
+        required=False, max_length=1000)
+
+    def __init__(self, ticket_type: str):
+        cfg = TICKET_TYPES[ticket_type]
+        super().__init__(title=f"{cfg['emoji']} Ouvrir — {cfg['label']}")
+        self.ticket_type = ticket_type
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await open_ticket(interaction, self.ticket_type,
+                          subject=self.subject.value,
+                          details=self.details.value or "")
 
 # ─── FONCTION D'OUVERTURE DE TICKET ──────────────────────────────────────────
-async def open_ticket(interaction: discord.Interaction, ticket_type: str):
+async def open_ticket(interaction: discord.Interaction, ticket_type: str, subject: str = "", details: str = ""):
     guild  = interaction.guild
     author = interaction.user
     gid    = str(guild.id)
@@ -2075,7 +2114,8 @@ async def open_ticket(interaction: discord.Interaction, ticket_type: str):
     category = guild.get_channel(int(cat_id)) if cat_id else None
 
     ticket_number = len(tickets_db.get(gid, {})) + 1
-    channel_name  = f"{ticket_type}-{author.name.lower().replace(' ', '-')}-{ticket_number}"
+    safe_name     = author.name[:15].lower().replace(" ", "-")
+    channel_name  = f"ticket-{ticket_type}-{safe_name}-{ticket_number}"
 
     overwrites = get_ticket_overwrites(guild, author, ticket_type)
 
@@ -2088,6 +2128,7 @@ async def open_ticket(interaction: discord.Interaction, ticket_type: str):
         "author_name": author.name,
         "number":      ticket_number,
         "type":        ticket_type,
+        "subject":     subject,
         "status":      "open",
         "claimed_by":  None,
         "opened_at":   str(datetime.utcnow()),
@@ -2096,22 +2137,37 @@ async def open_ticket(interaction: discord.Interaction, ticket_type: str):
     save_json("tickets.json", tickets_db)
 
     # Mention du rôle concerné
-    role_id   = cfg.get("role_id")
-    role      = guild.get_role(role_id) if role_id else discord.utils.get(guild.roles, name=cfg["role"])
+    role_id      = cfg.get("role_id")
+    role         = guild.get_role(role_id) if role_id else discord.utils.get(guild.roles, name=cfg["role"])
     role_mention = role.mention if role else f"@{cfg['role']}"
 
+    # Embed de bienvenue
     e = discord.Embed(
-        title=f"{cfg['emoji']} Ticket {ticket_type.capitalize()} #{ticket_number}",
-        description=(
-            f"Bonjour {author.mention} ! 👋\n\n"
-            f"**{cfg['description']}**\n\n"
-            f"Décris ton problème en détail, notre équipe {role_mention} te répondra dès que possible.\n\n"
-            f"{'⚠️ Ce ticket est géré uniquement par **B#tch**.' if ticket_type == 'partenariat' else ''}"
-        ),
+        title=f"{cfg['emoji']}  Ticket #{ticket_number} — {cfg['label']}",
         color=cfg["color"],
         timestamp=datetime.utcnow()
     )
-    e.set_footer(text=f"Ticket #{ticket_number} • {author.name}")
+    e.add_field(name="👤 Membre", value=author.mention, inline=True)
+    e.add_field(name="🏷️ Type",   value=cfg["label"],   inline=True)
+    e.add_field(name="🔢 Numéro", value=f"#{ticket_number}", inline=True)
+    if subject:
+        e.add_field(name="📌 Sujet",    value=subject[:1024],  inline=False)
+    if details:
+        e.add_field(name="📝 Détails",  value=details[:1024],  inline=False)
+    rules_staff = f"› Notre équipe {role_mention} te répond dès que possible."
+    rules_part  = "› Ce ticket est réservé à **B#tch** (Direction)."
+    e.add_field(
+        name="📋 Règles du ticket",
+        value=(
+            "› Sois précis et respectueux.\n"
+            "› Ne ping pas inutilement le staff.\n"
+            "› Le ticket sera fermé si inactif.\n"
+            f"{rules_part if ticket_type == 'partenariat' else rules_staff}"
+        ),
+        inline=False
+    )
+    e.set_thumbnail(url=author.display_avatar.url)
+    e.set_footer(text=f"Kozakura Support  •  {author.name}", icon_url=author.display_avatar.url)
 
     await ticket_channel.send(
         content=f"{author.mention} {role_mention}",
@@ -2122,43 +2178,102 @@ async def open_ticket(interaction: discord.Interaction, ticket_type: str):
     await interaction.response.send_message(
         f"✅ Ton ticket a été créé : {ticket_channel.mention}", ephemeral=True)
 
-    le = discord.Embed(title=f"🎫 Ticket Ouvert — {ticket_type.capitalize()}",
+    le = discord.Embed(
+        title=f"🎫 Ticket Ouvert — {cfg['label']}",
         description=f"Par {author.mention} → {ticket_channel.mention}",
         color=cfg["color"], timestamp=datetime.utcnow())
     le.add_field(name="Ticket", value=f"#{ticket_number}")
-    le.add_field(name="Type",   value=ticket_type.capitalize())
+    le.add_field(name="Type",   value=cfg["label"])
     le.add_field(name="Membre", value=f"{author} ({author.id})")
+    if subject:
+        le.add_field(name="Sujet", value=subject[:256], inline=False)
     await log_ticket(guild, le)
 
 # ─── VIEW CONTRÔLES DU TICKET ─────────────────────────────────────────────────
-class TicketControlView(discord.ui.View):
-    def __init__(self): super().__init__(timeout=None)
+TICKET_PRIORITY_LABEL = {
+    "urgent":  "🔴 URGENT",
+    "haute":   "🟠 Haute",
+    "normale": "🔵 Normale",
+    "basse":   "🟢 Basse",
+}
 
-    @discord.ui.button(label="🔒 Fermer", style=discord.ButtonStyle.red, custom_id="tc_close")
+class PrioritySelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="Priorité Urgente",  value="urgent",  emoji="🔴", description="Nécessite une attention immédiate"),
+            discord.SelectOption(label="Priorité Haute",    value="haute",   emoji="🟠", description="À traiter rapidement"),
+            discord.SelectOption(label="Priorité Normale",  value="normale", emoji="🔵", description="Flux standard"),
+            discord.SelectOption(label="Priorité Basse",    value="basse",   emoji="🟢", description="Pas urgent"),
+        ]
+        super().__init__(placeholder="🏷️ Définir la priorité...", options=options,
+                         custom_id="tc_priority", row=1, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        niveau = self.values[0]
+        gid = str(interaction.guild_id); tid = str(interaction.channel_id)
+        if gid not in tickets_db or tid not in tickets_db[gid]:
+            return await interaction.response.send_message("❌ Pas un ticket.", ephemeral=True)
+        tickets_db[gid][tid]["priority"] = niveau
+        save_json("tickets.json", tickets_db)
+        color = TICKET_PRIORITY_COLORS[niveau]
+        label = TICKET_PRIORITY_LABEL[niveau]
+        ch_name = interaction.channel.name
+        for p in ("urgent-", "haute-", "normale-", "basse-"):
+            if ch_name.startswith(p):
+                ch_name = ch_name[len(p):]
+                break
+        try:
+            await interaction.channel.edit(name=f"{niveau}-{ch_name}")
+        except Exception:
+            pass
+        e = discord.Embed(
+            title=f"{label}  •  Priorité mise à jour",
+            description=f"Ce ticket est maintenant en priorité **{label}**.",
+            color=color, timestamp=datetime.utcnow()
+        )
+        e.set_footer(text=f"Modifié par {interaction.user}", icon_url=interaction.user.display_avatar.url)
+        await interaction.response.send_message(embed=e)
+
+
+class TicketControlView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(PrioritySelect())
+
+    @discord.ui.button(label="Fermer", emoji="🔒", style=discord.ButtonStyle.red, custom_id="tc_close", row=0)
     async def close_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
         await interaction.response.send_modal(CloseTicketModal())
 
-    @discord.ui.button(label="✋ Claim", style=discord.ButtonStyle.green, custom_id="tc_claim")
+    @discord.ui.button(label="Claim", emoji="✋", style=discord.ButtonStyle.green, custom_id="tc_claim", row=0)
     async def claim_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
         gid = str(interaction.guild_id); tid = str(interaction.channel_id)
         data = tickets_db.get(gid, {}).get(tid)
         if not data: return await interaction.response.send_message("❌ Pas un ticket.", ephemeral=True)
-        if data.get("claimed_by"):
+        # Toggle: si déjà claim par soi-même → unclaim
+        if data.get("claimed_by") and str(data["claimed_by"]) == str(interaction.user.id):
+            tickets_db[gid][tid]["claimed_by"] = None
+            save_json("tickets.json", tickets_db)
+            e = discord.Embed(title="✋ Ticket Unclaim",
+                description=f"{interaction.user.mention} a retiré sa prise en charge.",
+                color=discord.Color.orange(), timestamp=datetime.utcnow())
+            await interaction.response.send_message(embed=e)
+        elif data.get("claimed_by"):
             claimer = interaction.guild.get_member(int(data["claimed_by"]))
             return await interaction.response.send_message(
                 f"❌ Ce ticket est déjà claim par {claimer.mention if claimer else 'quelqu\'un'}.", ephemeral=True)
-        tickets_db[gid][tid]["claimed_by"] = interaction.user.id
-        save_json("tickets.json", tickets_db)
-        e = discord.Embed(title="✋ Ticket Claim",
-            description=f"{interaction.user.mention} a pris en charge ce ticket.",
-            color=discord.Color.green(), timestamp=datetime.utcnow())
-        await interaction.response.send_message(embed=e)
-        le = discord.Embed(title="✋ Ticket Claim",
-            description=f"Ticket #{data['number']} claim par {interaction.user.mention}",
-            color=discord.Color.green(), timestamp=datetime.utcnow())
-        await log_ticket(interaction.guild, le)
+        else:
+            tickets_db[gid][tid]["claimed_by"] = interaction.user.id
+            save_json("tickets.json", tickets_db)
+            e = discord.Embed(title="✋ Ticket Claim",
+                description=f"{interaction.user.mention} a pris en charge ce ticket.",
+                color=discord.Color.green(), timestamp=datetime.utcnow())
+            await interaction.response.send_message(embed=e)
+            le = discord.Embed(title="✋ Ticket Claim",
+                description=f"Ticket #{data['number']} claim par {interaction.user.mention}",
+                color=discord.Color.green(), timestamp=datetime.utcnow())
+            await log_ticket(interaction.guild, le)
 
-    @discord.ui.button(label="📋 Infos", style=discord.ButtonStyle.grey, custom_id="tc_info")
+    @discord.ui.button(label="Infos", emoji="📋", style=discord.ButtonStyle.grey, custom_id="tc_info", row=0)
     async def info_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
         gid = str(interaction.guild_id); tid = str(interaction.channel_id)
         data = tickets_db.get(gid, {}).get(tid)
@@ -2167,20 +2282,29 @@ class TicketControlView(discord.ui.View):
         if data.get("claimed_by"):
             m = interaction.guild.get_member(int(data["claimed_by"]))
             claimer = m.mention if m else "Inconnu"
-        e = discord.Embed(title="📋 Infos du Ticket", color=discord.Color.blurple())
-        e.add_field(name="Numéro",  value=f"#{data['number']}")
-        e.add_field(name="Type",    value=data.get("type", "?").capitalize())
-        e.add_field(name="Auteur",  value=data['author_name'])
-        e.add_field(name="Statut",  value="🟢 Ouvert" if data["status"] == "open" else "🔴 Fermé")
-        e.add_field(name="Claim",   value=claimer)
-        e.add_field(name="Ouvert",  value=data["opened_at"][:16])
+        cfg = TICKET_TYPES.get(data.get("type", ""), {})
+        priority = TICKET_PRIORITY_LABEL.get(data.get("priority", "normale"), "🔵 Normale")
+        e = discord.Embed(
+            title=f"📋  Ticket #{data['number']} — Infos",
+            color=cfg.get("color", discord.Color.blurple()),
+            timestamp=datetime.utcnow()
+        )
+        e.add_field(name="👤 Auteur",    value=data["author_name"],  inline=True)
+        e.add_field(name="🏷️ Type",      value=data.get("type","?").capitalize(), inline=True)
+        e.add_field(name="🔢 Numéro",    value=f"#{data['number']}", inline=True)
+        e.add_field(name="📊 Statut",    value="🟢 Ouvert" if data["status"] == "open" else "🔴 Fermé", inline=True)
+        e.add_field(name="✋ Claim",     value=claimer, inline=True)
+        e.add_field(name="🏷️ Priorité",  value=priority, inline=True)
+        if data.get("subject"):
+            e.add_field(name="📌 Sujet", value=data["subject"][:256], inline=False)
+        e.add_field(name="⏰ Ouvert le", value=data["opened_at"][:16], inline=False)
         await interaction.response.send_message(embed=e, ephemeral=True)
 
 # ─── MODAL FERMETURE ──────────────────────────────────────────────────────────
-class CloseTicketModal(discord.ui.Modal, title="Fermer le ticket"):
+class CloseTicketModal(discord.ui.Modal, title="🔒 Fermer le ticket"):
     reason = discord.ui.TextInput(
         label="Raison de fermeture",
-        placeholder="Ex: Problème résolu...",
+        placeholder="Ex: Problème résolu, demande traitée...",
         style=discord.TextStyle.short,
         required=False, max_length=200)
 
@@ -2191,8 +2315,9 @@ class CloseTicketModal(discord.ui.Modal, title="Fermer le ticket"):
         if not data:
             return await interaction.response.send_message("❌ Pas un ticket valide.", ephemeral=True)
 
-        reason_text = self.reason.value or "Aucune raison"
+        reason_text = self.reason.value or "Aucune raison spécifiée"
         author = guild.get_member(int(data["author_id"])) if data.get("author_id") else None
+        cfg = TICKET_TYPES.get(data.get("type", ""), {})
 
         tickets_db[gid][tid]["status"]       = "closed"
         tickets_db[gid][tid]["closed_by"]    = str(interaction.user.id)
@@ -2200,16 +2325,41 @@ class CloseTicketModal(discord.ui.Modal, title="Fermer le ticket"):
         tickets_db[gid][tid]["close_reason"] = reason_text
         save_json("tickets.json", tickets_db)
 
-        e = discord.Embed(title="🔒 Ticket Fermé",
-            description=f"Fermé par {interaction.user.mention}\n**Raison :** {reason_text}",
-            color=discord.Color.red(), timestamp=datetime.utcnow())
+        e = discord.Embed(
+            title="🔒  Ticket Fermé",
+            description=(
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"**Fermé par** {interaction.user.mention}\n"
+                f"**Raison :** {reason_text}\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.from_rgb(237, 66, 69),
+            timestamp=datetime.utcnow()
+        )
+        e.add_field(name="🎫 Ticket", value=f"#{data['number']}", inline=True)
+        e.add_field(name="🏷️ Type",   value=data.get("type","?").capitalize(), inline=True)
+        e.add_field(name="👤 Auteur", value=data["author_name"], inline=True)
+        e.set_footer(text="Suppression dans 10 secondes…")
         await interaction.response.send_message(embed=e)
 
         if author:
-            await dm(author, "🎫 Ton ticket a été fermé",
-                f"**Serveur :** {guild.name}\n**Ticket :** #{data['number']}\n"
-                f"**Type :** {data.get('type','?').capitalize()}\n**Raison :** {reason_text}\n\n"
-                "Merci d'avoir contacté le support !", color=discord.Color.orange())
+            dm_e = discord.Embed(
+                title="🌸  Ton ticket a été fermé",
+                description=(
+                    f"**Serveur :** {guild.name}\n"
+                    f"**Ticket :** #{data['number']} — {data.get('type','?').capitalize()}\n"
+                    f"**Fermé par :** {interaction.user}\n"
+                    f"**Raison :** {reason_text}\n\n"
+                    "Merci d'avoir contacté le support Kozakura 💌"
+                ),
+                color=discord.Color.from_rgb(255, 182, 193),
+                timestamp=datetime.utcnow()
+            )
+            dm_e.set_footer(text="Kozakura Support")
+            try:
+                await author.send(embed=dm_e)
+            except Exception:
+                pass
 
         le = discord.Embed(title="🔒 Ticket Fermé",
             description=f"Fermé par {interaction.user.mention}",
@@ -2398,22 +2548,28 @@ async def list_tickets(ctx):
     data = tickets_db.get(gid, {})
     open_tickets = [(tid, t) for tid, t in data.items() if t.get("status") == "open"]
 
-    e = discord.Embed(title=f"🎫 Tickets Ouverts ({len(open_tickets)})",
-        color=discord.Color.blurple(), timestamp=datetime.utcnow())
+    e = discord.Embed(
+        title=f"🎫  Tickets Ouverts — {len(open_tickets)} actif(s)",
+        color=discord.Color.from_rgb(255, 182, 193),
+        timestamp=datetime.utcnow()
+    )
+    e.set_footer(text=f"Kozakura Support  •  {ctx.guild.name}")
 
     if not open_tickets:
-        e.description = "Aucun ticket ouvert en ce moment ✅"
+        e.description = "✅ Aucun ticket ouvert en ce moment."
     else:
         for tid, t in open_tickets[:15]:
             ch = ctx.guild.get_channel(int(tid))
-            claim_status = "Non claim"
+            claim_val = "—"
             if t.get("claimed_by"):
                 m = ctx.guild.get_member(int(t["claimed_by"]))
-                claim_status = f"✋ {m.name if m else 'Inconnu'}"
+                claim_val = f"✋ {m.name if m else 'Inconnu'}"
+            priority = TICKET_PRIORITY_LABEL.get(t.get("priority", "normale"), "🔵 Normale")
+            subject_line = f"\n📌 {t['subject'][:60]}" if t.get("subject") else ""
             e.add_field(
-                name=f"#{t['number']} [{t.get('type','?').upper()}] — {t['author_name']}",
-                value=f"Salon: {ch.mention if ch else 'Supprimé'}\nClaim: {claim_status}",
-                inline=True)
+                name=f"{TICKET_PRIORITY_EMOJI.get(t.get('priority','normale'),'🔵')} #{t['number']} · {t.get('type','?').upper()} — {t['author_name']}",
+                value=f"{ch.mention if ch else '`Supprimé`'}  ·  {claim_val}{subject_line}",
+                inline=False)
     await ctx.send(embed=e)
 
 # ─── PANEL ADMIN ──────────────────────────────────────────────────────────────
@@ -2683,7 +2839,7 @@ async def help(ctx, categorie: str = None):
 
         elif cat == "ia":
             e.title = "🤖 Intelligence Artificielle"
-            e.description = "Powered by **Groq • Llama 3** — Mentionne le bot ou écris dans `🧠・ia`"
+            e.description = "Powered by **Claude (Anthropic)** — Mentionne le bot ou écris dans `🧠・ia`"
             e.add_field(name="@Kozakura [message]",       value="Parle directement au bot n'importe où", inline=False)
             e.add_field(name="!ai [question]",            value="Pose une question à l'IA", inline=False)
             e.add_field(name="!mood",                     value="Analyse l'ambiance des 50 derniers messages du salon 🌸", inline=False)
@@ -3652,6 +3808,44 @@ async def on_invite_delete(invite):
     e.set_footer(text="Kozakura Security")
     await log_security(invite.guild, e)
 
+# ── Helper lockdown (appelable sans ctx) ─────────────────────────────────────
+async def trigger_lockdown(guild, raison: str = "Mesure de sécurité d'urgence", triggered_by: str = "Anti-Raid automatique"):
+    """Verrouille tous les salons texte — peut être appelé sans contexte de commande."""
+    gid = str(guild.id)
+    if lockdown_active.get(gid):
+        return  # Déjà en lockdown
+    lockdown_active[gid] = True
+    locked = 0
+    for channel in guild.text_channels:
+        try:
+            overwrite = channel.overwrites_for(guild.default_role)
+            lockdown_backup[channel.id] = overwrite.pair()
+            overwrite.send_messages = False
+            await channel.set_permissions(guild.default_role, overwrite=overwrite,
+                reason=f"🔒 Lockdown auto : {raison}")
+            locked += 1
+        except Exception:
+            pass
+    e = discord.Embed(
+        title="🔒 SERVEUR EN LOCKDOWN",
+        description=f"**{locked}** salon(s) verrouillé(s)\n**Raison :** {raison}",
+        color=discord.Color.dark_red(),
+        timestamp=datetime.utcnow()
+    )
+    e.add_field(name="🛡️ Déclenché par", value=triggered_by)
+    e.add_field(name="🔓 Pour lever", value="`!unlockdown`")
+    e.set_footer(text="Kozakura Security")
+    await log_security(guild, e)
+    # Ping staff dans le salon de sécurité
+    staff_role = discord.utils.get(guild.roles, name="Gestion")
+    sec_ch = discord.utils.find(
+        lambda c: any(n in c.name.lower() for n in SECURITY_LOG_NAMES), guild.text_channels
+    )
+    if sec_ch and staff_role:
+        await sec_ch.send(f"🚨 {staff_role.mention} — **LOCKDOWN AUTOMATIQUE** : {raison}", embed=e)
+    elif sec_ch:
+        await sec_ch.send(f"🚨 **LOCKDOWN AUTOMATIQUE** : {raison}", embed=e)
+
 # ── Commandes Lockdown ────────────────────────────────────────────────────────
 @bot.command(name="lockdown")
 @commands.has_permissions(administrator=True)
@@ -4120,7 +4314,7 @@ async def honeypot_listener(message):
     age = (datetime.utcnow() - member.created_at.replace(tzinfo=None)).days
     if age < 7:
         try:
-            await member.ban(reason="🍯 Honeypot — compte suspect")
+            await member.ban(reason="🍯 Honeypot — compte suspect", delete_message_days=7)
             await sec_ch.send(f"✅ {member} banni automatiquement (compte {age}j)")
         except Exception: pass
 
@@ -4764,12 +4958,17 @@ async def check_antibot(member):
     e.add_field(name="Whitelist", value=f"Non autorisé\nUtilise `!addbotwhitelist {member.id}` pour l'autoriser")
     e.set_thumbnail(url=member.display_avatar.url)
 
-    # Alerte si raid de bots
+    # Alerte + lockdown si raid de bots
     if len(bot_raid_tracker) >= 3:
         e.add_field(name="⚠️ ALERTE RAID BOTS",
             value=f"**{len(bot_raid_tracker)} bots** ont tenté de rejoindre en 30 secondes !",
             inline=False)
         e.color = discord.Color.dark_red()
+        await trigger_lockdown(
+            guild,
+            raison=f"Raid de bots — {len(bot_raid_tracker)} bots en 30 secondes",
+            triggered_by="🤖 Anti-Bot automatique"
+        )
 
     await log(guild, e)
 
@@ -4914,7 +5113,7 @@ async def massbanconfirm(ctx):
                 await dm(member, "🔨 Tu as été banni",
                     f"**Serveur :** {ctx.guild.name}\n**Raison :** {reason}",
                     color=discord.Color.dark_red())
-                await member.ban(reason=f"[MassBan] {reason}")
+                await member.ban(reason=f"[MassBan] {reason}", delete_message_days=7)
             else:
                 user = await bot.fetch_user(uid)
                 await ctx.guild.ban(user, reason=f"[MassBan] {reason}")
@@ -5494,12 +5693,12 @@ async def send_embed(ctx, titre: str, couleur: str = "bleu", *, contenu: str):
 @bot.command(name="ai")
 async def ai_command(ctx, *, question: str):
     """!ai [question] — Pose une question à l'IA Kozakura"""
-    if not GROQ_API_KEY:
-        return await ctx.send("❌ L'IA n'est pas configurée (clé GROQ manquante).")
+    if not ANTHROPIC_API_KEY:
+        return await ctx.send("❌ L'IA n'est pas configurée (clé ANTHROPIC_API_KEY manquante).")
 
     async with ctx.typing():
         messages = [{"role": "user", "content": f"{ctx.author.display_name}: {question}"}]
-        response = await call_groq(messages)
+        response = await call_claude(messages)
 
     e = discord.Embed(
         description=response,
@@ -5507,14 +5706,14 @@ async def ai_command(ctx, *, question: str):
         timestamp=datetime.utcnow()
     )
     e.set_author(name=f"🤖 Kozakura AI — réponse à {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
-    e.set_footer(text="Powered by Groq • Llama 3")
+    e.set_footer(text="Powered by Claude (Anthropic)")
     await ctx.reply(embed=e)
 
 @bot.command(name="announce")
 @commands.has_permissions(administrator=True)
 async def ai_announce(ctx, *, sujet: str):
     """!announce [sujet] — Génère une annonce stylée avec l'IA"""
-    if not GROQ_API_KEY:
+    if not ANTHROPIC_API_KEY:
         return await ctx.send("❌ L'IA n'est pas configurée.")
 
     async with ctx.typing():
@@ -5524,7 +5723,7 @@ async def ai_announce(ctx, *, sujet: str):
                       f"Utilise des emojis Discord, du **gras**, et structure bien l'annonce. Maximum 400 mots. "
                       f"Le serveur s'appelle Kozakura."
         }]
-        response = await call_groq(messages)
+        response = await call_claude(messages)
 
     e = discord.Embed(
         title="📢 Annonce",
@@ -5563,7 +5762,7 @@ async def ai_announce(ctx, *, sujet: str):
 @commands.has_permissions(kick_members=True)
 async def ai_resume(ctx, nb_messages: int = 20):
     """!resume [nb] — Résume les derniers messages du salon avec l'IA"""
-    if not GROQ_API_KEY:
+    if not ANTHROPIC_API_KEY:
         return await ctx.send("❌ L'IA n'est pas configurée.")
 
     nb_messages = min(nb_messages, 50)
@@ -5585,7 +5784,7 @@ async def ai_resume(ctx, nb_messages: int = 20):
             "content": f"Résume cette conversation Discord en français de manière concise et claire. "
                       f"Identifie les sujets principaux, les points importants et l'ambiance générale :\n\n{conversation}"
         }]
-        response = await call_groq(prompt)
+        response = await call_claude(prompt)
 
     e = discord.Embed(
         title=f"📝 Résumé des {nb_messages} derniers messages",
@@ -5600,7 +5799,7 @@ async def ai_resume(ctx, nb_messages: int = 20):
 @commands.has_permissions(kick_members=True)
 async def ai_analyse(ctx, member: discord.Member):
     """!analyse @membre — Analyse le comportement d'un membre avec l'IA"""
-    if not GROQ_API_KEY:
+    if not ANTHROPIC_API_KEY:
         return await ctx.send("❌ L'IA n'est pas configurée.")
 
     gid = str(ctx.guild.id)
@@ -5631,7 +5830,7 @@ async def ai_analyse(ctx, member: discord.Member):
                       f"ses points positifs, ses points négatifs, et une recommandation pour le staff. "
                       f"Sois objectif et professionnel :\n\n{data_str}"
         }]
-        response = await call_groq(prompt)
+        response = await call_claude(prompt)
 
     e = discord.Embed(
         title=f"🔍 Analyse IA — {member.display_name}",
@@ -5688,8 +5887,8 @@ async def setautotrad(ctx, state: str, channel: discord.TextChannel = None):
 @bot.command(name="mood")
 async def mood(ctx):
     """!mood — L'IA analyse l'ambiance générale des 50 derniers messages"""
-    if not GROQ_API_KEY:
-        return await ctx.send("❌ Clé API Groq non configurée.")
+    if not ANTHROPIC_API_KEY:
+        return await ctx.send("❌ Clé API Anthropic non configurée.")
     async with ctx.typing():
         messages_raw = []
         async for msg in ctx.channel.history(limit=50):
@@ -5703,7 +5902,7 @@ async def mood(ctx):
             f"Analyse l'ambiance générale de cette conversation Discord (serveur: {ctx.guild.name}). "
             f"Décris en 3-4 phrases l'humeur, le ton, et l'énergie du salon. "
             f"Utilise des emojis japonais/anime. Sois créatif et expressif.\n\n---\n{sample}"}]
-        response = await call_groq(prompt)
+        response = await call_claude(prompt)
     e = discord.Embed(
         title="🌸 Analyse d'Ambiance — Kozakura IA",
         description=response,
@@ -5715,8 +5914,8 @@ async def mood(ctx):
 @bot.command(name="roast")
 async def roast(ctx, member: discord.Member = None):
     """!roast @membre — L'IA génère un roast drôle et bienveillant basé sur les stats"""
-    if not GROQ_API_KEY:
-        return await ctx.send("❌ Clé API Groq non configurée.")
+    if not ANTHROPIC_API_KEY:
+        return await ctx.send("❌ Clé API Anthropic non configurée.")
     member = member or ctx.author
     gid = str(ctx.guild.id); uid = str(member.id)
     xp   = xp_db.get(gid, {}).get(uid, 0)
@@ -5736,7 +5935,7 @@ async def roast(ctx, member: discord.Member = None):
             f"Nombre de rôles: {roles_count}. "
             f"Style anime/japonais, max 150 mots, avec emojis. "
             f"C'est pour rire, reste gentil et créatif !"}]
-        response = await call_groq(prompt)
+        response = await call_claude(prompt)
     e = discord.Embed(
         title=f"🔥 Roast de {member.display_name}",
         description=response,
@@ -5749,14 +5948,14 @@ async def roast(ctx, member: discord.Member = None):
 @bot.command(name="conseil")
 async def conseil(ctx):
     """!conseil — L'IA donne un conseil de vie profond"""
-    if not GROQ_API_KEY:
-        return await ctx.send("❌ Clé API Groq non configurée.")
+    if not ANTHROPIC_API_KEY:
+        return await ctx.send("❌ Clé API Anthropic non configurée.")
     async with ctx.typing():
         prompt = [{"role": "user", "content":
             "Donne un conseil de vie profond, inspirant et original. "
             "Style poétique avec des métaphores japonaises/anime (cerisiers, samouraïs, katana, etc.). "
             "Max 100 mots. Termine par un emoji japonais."}]
-        response = await call_groq(prompt)
+        response = await call_claude(prompt)
     e = discord.Embed(
         title="🌸 Conseil de Kozakura",
         description=f"*{response}*",
@@ -5768,8 +5967,8 @@ async def conseil(ctx):
 @bot.command(name="histoire")
 async def histoire(ctx):
     """!histoire — L'IA génère une courte histoire avec des membres du serveur"""
-    if not GROQ_API_KEY:
-        return await ctx.send("❌ Clé API Groq non configurée.")
+    if not ANTHROPIC_API_KEY:
+        return await ctx.send("❌ Clé API Anthropic non configurée.")
     import random
     # Prendre 3-5 membres aléatoires du serveur (non-bots)
     members_sample = random.sample(
@@ -5783,7 +5982,7 @@ async def histoire(ctx):
             f"dans un univers anime/japonais (ninjas, samouraïs, magie, Japon féodal...) "
             f"en incluant CES vrais membres du serveur '{ctx.guild.name}' : {names}. "
             f"L'histoire doit être positive, créative et amusante. Utilise des emojis."}]
-        response = await call_groq(prompt)
+        response = await call_claude(prompt)
     e = discord.Embed(
         title="📜 Histoire de Kozakura",
         description=response,
@@ -5841,7 +6040,7 @@ async def _save_ticket_transcript(guild, channel, ticket_data):
 # ─── RÉSUMÉ AUTOMATIQUE À LA FERMETURE DES TICKETS ───────────────────────────
 async def ai_summarize_ticket(guild, channel, ticket_data):
     """Résume automatiquement un ticket à sa fermeture"""
-    if not GROQ_API_KEY:
+    if not ANTHROPIC_API_KEY:
         return
 
     try:
@@ -5863,7 +6062,7 @@ async def ai_summarize_ticket(guild, channel, ticket_data):
                       f"et le ton général de l'échange. Sois concis :\n\n{conversation}"
         }]
 
-        summary = await call_groq(prompt)
+        summary = await call_claude(prompt)
 
         # Envoyer le résumé dans les logs tickets
         log_ch_id = get_cfg(guild.id, "ticket_log_channel")
@@ -6118,7 +6317,7 @@ async def track_message_count(message):
 @bot.command(name="imagine")
 async def ai_imagine(ctx, *, description: str):
     """!imagine [description] — Génère une description d'image détaillée avec l'IA"""
-    if not GROQ_API_KEY:
+    if not ANTHROPIC_API_KEY:
         return await ctx.send("❌ L'IA n'est pas configurée.")
 
     async with ctx.typing():
@@ -6131,7 +6330,7 @@ async def ai_imagine(ctx, *, description: str):
                 f"suivi de mots-clés style 'prompt' séparés par des virgules."
             )
         }]
-        response = await call_groq(prompt)
+        response = await call_claude(prompt)
 
     e = discord.Embed(
         title=f"🎨 Imagine — {description[:50]}",
@@ -6149,7 +6348,7 @@ async def ai_traduis(ctx, langue: str = "anglais", *, texte: str):
     Exemples : !traduis anglais Bonjour tout le monde
                !traduis espagnol Comment ça va ?
     """
-    if not GROQ_API_KEY:
+    if not ANTHROPIC_API_KEY:
         return await ctx.send("❌ L'IA n'est pas configurée.")
 
     async with ctx.typing():
@@ -6157,7 +6356,7 @@ async def ai_traduis(ctx, langue: str = "anglais", *, texte: str):
             "role": "user",
             "content": f"Traduis ce texte en {langue}. Réponds UNIQUEMENT avec la traduction, sans explications :\n\n{texte}"
         }]
-        response = await call_groq(prompt)
+        response = await call_claude(prompt)
 
     e = discord.Embed(color=discord.Color.blue(), timestamp=datetime.utcnow())
     e.add_field(name="📝 Original", value=texte[:500], inline=False)
@@ -6169,7 +6368,7 @@ async def ai_traduis(ctx, langue: str = "anglais", *, texte: str):
 @commands.has_permissions(kick_members=True)
 async def ai_moderation(ctx, member: discord.Member, *, raison: str = None):
     """!moderia @membre [raison] — L'IA analyse et propose une sanction"""
-    if not GROQ_API_KEY:
+    if not ANTHROPIC_API_KEY:
         return await ctx.send("❌ L'IA n'est pas configurée.")
 
     gid = str(ctx.guild.id)
@@ -6194,7 +6393,7 @@ async def ai_moderation(ctx, member: discord.Member, *, raison: str = None):
                 f"et une justification courte. Sois juste et proportionnel."
             )
         }]
-        response = await call_groq(prompt)
+        response = await call_claude(prompt)
 
     e = discord.Embed(
         title=f"🤖 Analyse IA — {member.display_name}",
@@ -6220,8 +6419,17 @@ from flask import Flask, request, jsonify
 from threading import Thread
 
 # ── CORS helper ───────────────────────────────────────────────────────────────
+DASHBOARD_ORIGIN = os.getenv("DASHBOARD_ORIGIN", "")  # ex: https://mon-dashboard.railway.app
+
 def add_cors(response):
-    response.headers["Access-Control-Allow-Origin"]  = "*"
+    origin = request.headers.get("Origin", "")
+    if DASHBOARD_ORIGIN:
+        # Autoriser uniquement l'origine configurée
+        if origin == DASHBOARD_ORIGIN:
+            response.headers["Access-Control-Allow-Origin"] = origin
+    else:
+        # Fallback si non configuré (à éviter en production)
+        response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-API-Key"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
     return response
@@ -6232,6 +6440,25 @@ def add_cors(response):
 
 API_SECRET = os.getenv("DASHBOARD_SECRET", "")
 app_flask  = Flask(__name__)
+
+# ── Rate limiting anti brute-force (en mémoire) ───────────────────────────────
+_auth_attempts: dict = {}   # {ip: [timestamps]}
+AUTH_MAX_ATTEMPTS = 10      # tentatives max
+AUTH_WINDOW       = 60      # secondes
+
+def _get_ip():
+    return request.headers.get("X-Forwarded-For", request.remote_addr or "unknown").split(",")[0].strip()
+
+def _check_rate_limit_auth():
+    ip  = _get_ip()
+    now = time.time()
+    attempts = _auth_attempts.setdefault(ip, [])
+    # Purge les anciennes tentatives
+    _auth_attempts[ip] = [t for t in attempts if now - t < AUTH_WINDOW]
+    if len(_auth_attempts[ip]) >= AUTH_MAX_ATTEMPTS:
+        return False
+    _auth_attempts[ip].append(now)
+    return True
 
 @app_flask.after_request
 def after_request(response):
@@ -6244,10 +6471,17 @@ def handle_options(*args, **kwargs):
     return add_cors(Response())
 
 def check_auth():
-    return request.headers.get("X-API-Key") == API_SECRET
+    return request.headers.get("X-API-Key") == API_SECRET and bool(API_SECRET)
 
 def api_error(msg, code=403):
     return jsonify({"error": msg}), code
+
+def safe_int(val, default=None):
+    """Conversion int sécurisée — retourne default si val n'est pas un entier valide."""
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return default
 
 def member_to_dict(m):
     return {
@@ -6263,8 +6497,10 @@ def member_to_dict(m):
 # ── Auth ─────────────────────────────────────────────────────────────────────
 @app_flask.route("/api/auth", methods=["POST"])
 def api_auth():
+    if not _check_rate_limit_auth():
+        return api_error("Trop de tentatives, réessaie dans 1 minute", 429)
     key = request.json.get("key") if request.json else None
-    if key == API_SECRET:
+    if key and key == API_SECRET and bool(API_SECRET):
         return jsonify({"status": "ok", "token": API_SECRET})
     return api_error("Clé invalide", 401)
 
@@ -6292,7 +6528,7 @@ def api_stats():
 @app_flask.route("/api/<guild_id>/members")
 def api_members(guild_id):
     if not check_auth(): return api_error("Non autorisé")
-    guild = bot.get_guild(int(guild_id))
+    guild = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
     members = [member_to_dict(m) for m in guild.members if not m.bot]
     return jsonify({"members": members, "total": len(members)})
@@ -6300,8 +6536,8 @@ def api_members(guild_id):
 @app_flask.route("/api/<guild_id>/members/<member_id>")
 def api_member(guild_id, member_id):
     if not check_auth(): return api_error("Non autorisé")
-    guild  = bot.get_guild(int(guild_id))
-    member = guild.get_member(int(member_id)) if guild else None
+    guild  = bot.get_guild(safe_int(guild_id))
+    member = guild.get_member(safe_int(member_id)) if guild else None
     if not member: return api_error("Membre introuvable", 404)
     gid = str(guild.id)
     uid = str(member.id)
@@ -6322,13 +6558,13 @@ def api_action(guild_id):
     member_id = data.get("member_id")
     reason    = data.get("reason", "Action depuis le dashboard")
 
-    guild  = bot.get_guild(int(guild_id))
+    guild  = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
-    member = guild.get_member(int(member_id)) if member_id else None
+    member = guild.get_member(safe_int(member_id)) if member_id else None
 
     async def do_action():
         if action == "ban" and member:
-            await member.ban(reason=reason)
+            await member.ban(reason=reason, delete_message_days=7)
         elif action == "kick" and member:
             await member.kick(reason=reason)
         elif action == "mute" and member:
@@ -6347,7 +6583,7 @@ def api_action(guild_id):
 @app_flask.route("/api/<guild_id>/sanctions")
 def api_sanctions(guild_id):
     if not check_auth(): return api_error("Non autorisé")
-    guild = bot.get_guild(int(guild_id))
+    guild = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
     gid   = str(guild.id)
     result = []
@@ -6365,7 +6601,7 @@ def api_sanctions(guild_id):
 @app_flask.route("/api/<guild_id>/tickets")
 def api_tickets(guild_id):
     if not check_auth(): return api_error("Non autorisé")
-    guild = bot.get_guild(int(guild_id))
+    guild = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
     gid   = str(guild.id)
     status_filter = request.args.get("status", "open")
@@ -6398,12 +6634,12 @@ def api_tickets(guild_id):
 @app_flask.route("/api/<guild_id>/tickets/<channel_id>/close", methods=["POST"])
 def api_close_ticket(guild_id, channel_id):
     if not check_auth(): return api_error("Non autorisé")
-    guild = bot.get_guild(int(guild_id))
+    guild = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
     gid = str(guild.id)
 
     async def do_close():
-        ch = guild.get_channel(int(channel_id))
+        ch = guild.get_channel(safe_int(channel_id))
         if ch:
             data = tickets_db.get(gid, {}).get(channel_id, {})
             tickets_db.setdefault(gid, {})[channel_id] = {
@@ -6424,7 +6660,7 @@ def api_close_ticket(guild_id, channel_id):
 @app_flask.route("/api/<guild_id>/security/shadowbans")
 def api_shadowbans(guild_id):
     if not check_auth(): return api_error("Non autorisé")
-    guild = bot.get_guild(int(guild_id))
+    guild = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
     gid = str(guild.id)
     result = []
@@ -6453,7 +6689,7 @@ def api_unshadowban(guild_id, member_id):
 @app_flask.route("/api/<guild_id>/security/watchlist")
 def api_watchlist(guild_id):
     if not check_auth(): return api_error("Non autorisé")
-    guild = bot.get_guild(int(guild_id))
+    guild = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
     gid = str(guild.id)
     result = []
@@ -6490,7 +6726,7 @@ def api_reports(guild_id):
 @app_flask.route("/api/<guild_id>/xp")
 def api_xp(guild_id):
     if not check_auth(): return api_error("Non autorisé")
-    guild = bot.get_guild(int(guild_id))
+    guild = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
     gid   = str(guild.id)
     result = []
@@ -6529,7 +6765,7 @@ def api_giveaways(guild_id):
 def api_create_giveaway(guild_id):
     if not check_auth(): return api_error("Non autorisé")
     data    = request.json or {}
-    guild   = bot.get_guild(int(guild_id))
+    guild   = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
     ch_id   = data.get("channel_id")
     channel = guild.get_channel(int(ch_id)) if ch_id else None
@@ -6568,7 +6804,7 @@ def api_create_giveaway(guild_id):
 @app_flask.route("/api/<guild_id>/trophees")
 def api_trophees(guild_id):
     if not check_auth(): return api_error("Non autorisé")
-    guild = bot.get_guild(int(guild_id))
+    guild = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
     gid   = str(guild.id)
     result = []
@@ -6604,7 +6840,7 @@ def api_set_config(guild_id):
 @app_flask.route("/api/<guild_id>/voice")
 def api_voice(guild_id):
     if not check_auth(): return api_error("Non autorisé")
-    guild = bot.get_guild(int(guild_id))
+    guild = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
     channels = []
     for vc in guild.voice_channels:
@@ -6631,10 +6867,10 @@ def api_voice_move(guild_id):
     data      = request.json or {}
     member_id = data.get("member_id")
     channel_id = data.get("channel_id")
-    guild  = bot.get_guild(int(guild_id))
+    guild  = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
-    member  = guild.get_member(int(member_id))
-    channel = guild.get_channel(int(channel_id))
+    member  = guild.get_member(safe_int(member_id))
+    channel = guild.get_channel(safe_int(channel_id))
     if not member or not channel: return api_error("Membre ou salon introuvable", 404)
     async def do_move():
         await member.move_to(channel, reason="Déplacé depuis le dashboard")
@@ -6645,8 +6881,8 @@ def api_voice_move(guild_id):
 def api_voice_disconnect(guild_id):
     if not check_auth(): return api_error("Non autorisé")
     member_id = (request.json or {}).get("member_id")
-    guild  = bot.get_guild(int(guild_id))
-    member = guild.get_member(int(member_id)) if guild else None
+    guild  = bot.get_guild(safe_int(guild_id))
+    member = guild.get_member(safe_int(member_id)) if guild else None
     if not member: return api_error("Membre introuvable", 404)
     async def do_dc():
         await member.move_to(None, reason="Déconnecté depuis le dashboard")
@@ -6660,9 +6896,9 @@ def api_send_message(guild_id):
     data       = request.json or {}
     channel_id = data.get("channel_id")
     content    = data.get("content", "")
-    guild      = bot.get_guild(int(guild_id))
+    guild      = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
-    channel = guild.get_channel(int(channel_id)) if channel_id else None
+    channel = guild.get_channel(safe_int(channel_id)) if channel_id else None
     if not channel: return api_error("Salon introuvable", 404)
     async def do_send():
         if data.get("embed"):
@@ -6681,7 +6917,7 @@ def api_send_message(guild_id):
 @app_flask.route("/api/<guild_id>/channels")
 def api_channels(guild_id):
     if not check_auth(): return api_error("Non autorisé")
-    guild = bot.get_guild(int(guild_id))
+    guild = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
     channels = [{"id": str(c.id), "name": c.name} for c in guild.text_channels]
     return jsonify({"channels": channels})
@@ -6690,7 +6926,7 @@ def api_channels(guild_id):
 @app_flask.route("/api/<guild_id>/roles")
 def api_roles(guild_id):
     if not check_auth(): return api_error("Non autorisé")
-    guild = bot.get_guild(int(guild_id))
+    guild = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
     roles = [{"id": str(r.id), "name": r.name, "color": str(r.color), "members": len(r.members)}
              for r in guild.roles if r.name != "@everyone"]
@@ -6700,9 +6936,9 @@ def api_roles(guild_id):
 def api_give_role(guild_id, role_id):
     if not check_auth(): return api_error("Non autorisé")
     member_id = (request.json or {}).get("member_id")
-    guild  = bot.get_guild(int(guild_id))
-    member = guild.get_member(int(member_id)) if guild else None
-    role   = guild.get_role(int(role_id)) if guild else None
+    guild  = bot.get_guild(safe_int(guild_id))
+    member = guild.get_member(safe_int(member_id)) if guild else None
+    role   = guild.get_role(safe_int(role_id)) if guild else None
     if not member or not role: return api_error("Introuvable", 404)
     async def do_give():
         await member.add_roles(role, reason="Ajouté depuis le dashboard")
@@ -6713,9 +6949,9 @@ def api_give_role(guild_id, role_id):
 def api_remove_role(guild_id, role_id):
     if not check_auth(): return api_error("Non autorisé")
     member_id = (request.json or {}).get("member_id")
-    guild  = bot.get_guild(int(guild_id))
-    member = guild.get_member(int(member_id)) if guild else None
-    role   = guild.get_role(int(role_id)) if guild else None
+    guild  = bot.get_guild(safe_int(guild_id))
+    member = guild.get_member(safe_int(member_id)) if guild else None
+    role   = guild.get_role(safe_int(role_id)) if guild else None
     if not member or not role: return api_error("Introuvable", 404)
     async def do_remove():
         await member.remove_roles(role, reason="Retiré depuis le dashboard")
@@ -6727,8 +6963,8 @@ def api_remove_role(guild_id, role_id):
 @app_flask.route("/api/<guild_id>/roles/<role_id>/delete", methods=["POST"])
 def api_delete_role(guild_id, role_id):
     if not check_auth(): return api_error("Non autorisé")
-    guild = bot.get_guild(int(guild_id))
-    role  = guild.get_role(int(role_id)) if guild else None
+    guild = bot.get_guild(safe_int(guild_id))
+    role  = guild.get_role(safe_int(role_id)) if guild else None
     if not role: return api_error("Rôle introuvable", 404)
     async def do_delete():
         await role.delete(reason="Supprimé depuis le dashboard")
@@ -6764,7 +7000,7 @@ def api_logs(guild_id):
 @app_flask.route("/api/<guild_id>/ranks")
 def api_ranks(guild_id):
     if not check_auth(): return api_error("Non autorisé")
-    guild = bot.get_guild(int(guild_id))
+    guild = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
     RANK_ROLES_LIST = [
         ("***", "Mirai"), ("**", "Taiyō"), ("*", "Hoshi"),
@@ -6783,8 +7019,8 @@ def api_set_rank(guild_id):
     data      = request.json or {}
     member_id = data.get("member_id")
     rank_idx  = data.get("rank_index", 0)  # 0=***, 5=I
-    guild     = bot.get_guild(int(guild_id))
-    member    = guild.get_member(int(member_id)) if guild else None
+    guild     = bot.get_guild(safe_int(guild_id))
+    member    = guild.get_member(safe_int(member_id)) if guild else None
     if not member: return api_error("Membre introuvable", 404)
     RANK_ROLES_PAIRS = [("***","Mirai"),("**","Taiyō"),("*","Hoshi"),("III","Shin"),("II","Tsuki"),("I","Kage")]
     async def do_rank():
@@ -7581,7 +7817,7 @@ _STATUTS = [
     (discord.ActivityType.watching,   "⛩️ Surveille le serveur"),
     (discord.ActivityType.playing,    "🗡️ En garde"),
     (discord.ActivityType.watching,   "🌙 Veille sur vous"),
-    (discord.ActivityType.listening,  "✨ Powered by Groq"),
+    (discord.ActivityType.listening,  "✨ Powered by Claude"),
     (discord.ActivityType.playing,    "🎋 Mode zen activé"),
     (discord.ActivityType.watching,   "🌸 Les fleurs de cerisier tomber"),
     (discord.ActivityType.listening,  "🏮 Les prières du temple"),
