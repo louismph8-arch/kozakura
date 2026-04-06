@@ -14,10 +14,11 @@ import json, os, re, time, asyncio, aiohttp
 from datetime import datetime, timedelta
 from collections import defaultdict
 
-# ─── GROQ AI ──────────────────────────────────────────────────────────────────
-GROQ_API_KEY   = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL     = "llama-3.1-8b-instant"
-GROQ_URL       = "https://api.groq.com/openai/v1/chat/completions"
+# ─── ANTHROPIC AI (Claude) ────────────────────────────────────────────────────
+import anthropic as _anthropic
+
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+CLAUDE_MODEL      = "claude-haiku-4-5"  # Rapide et économique pour un bot Discord
 
 # Historique des conversations par utilisateur {user_id: [messages]}
 ai_conversations = {}
@@ -36,12 +37,12 @@ expliquer des concepts, et modérer intelligemment.
 Tu connais les commandes du bot : !ban, !kick, !mute, !warn, !rank, !help, etc.
 Réponds de manière concise (max 300 mots) et adaptée à Discord.
 Si quelqu'un semble en conflit ou agressif, reste calme et professionnel.
-Ne mentionne jamais que tu es une IA Groq/Llama — tu es Kozakura."""
+Ne mentionne jamais que tu es une IA Anthropic/Claude — tu es Kozakura."""
 
-async def call_groq(messages: list, member_ctx: dict = None) -> str:
-    """Appelle l'API Groq et retourne la réponse"""
-    if not GROQ_API_KEY:
-        return "❌ Clé API Groq non configurée."
+async def call_claude(messages: list, member_ctx: dict = None) -> str:
+    """Appelle l'API Claude (Anthropic) et retourne la réponse"""
+    if not ANTHROPIC_API_KEY:
+        return "❌ Clé API Anthropic non configurée."
 
     # Système adaptatif selon le profil du membre
     system = SYSTEM_PROMPT
@@ -56,33 +57,24 @@ async def call_groq(messages: list, member_ctx: dict = None) -> str:
         if sancs > 3:
             system += "\nCe membre a eu des sanctions par le passé. Reste professionnel et neutre."
 
-    payload = {
-        "model": GROQ_MODEL,
-        "messages": [{"role": "system", "content": system}] + messages,
-        "max_tokens": 500,
-        "temperature": 0.7
-    }
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(GROQ_URL, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data["choices"][0]["message"]["content"].strip()
-                else:
-                    try:
-                        err = await resp.json()
-                        detail = err.get("error", {}).get("message", str(err))
-                    except Exception:
-                        detail = await resp.text()
-                    print(f"[Groq] Erreur {resp.status}: {detail}")
-                    return f"❌ Erreur API ({resp.status}) : {detail[:200]}"
-    except asyncio.TimeoutError:
-        return "⏰ Délai dépassé, réessaie !"
+        client = _anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        response = await client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=500,
+            system=system,
+            messages=messages
+        )
+        return response.content[0].text.strip()
+    except _anthropic.BadRequestError as e:
+        print(f"[Claude] BadRequest: {e.message}")
+        return f"❌ Requête invalide : {str(e.message)[:150]}"
+    except _anthropic.AuthenticationError:
+        return "❌ Clé API Anthropic invalide."
+    except _anthropic.RateLimitError:
+        return "⏰ Limite de requêtes atteinte, réessaie dans un moment !"
+    except _anthropic.APIConnectionError:
+        return "❌ Impossible de contacter l'API Claude."
     except Exception as e:
         return f"❌ Erreur : {str(e)[:100]}"
 
@@ -820,7 +812,7 @@ async def on_message(message):
         return
 
     # ── Détection IA contextuelle (mots dangereux en contexte) ───────────────
-    if GROQ_API_KEY and len(message.content) > 20:
+    if ANTHROPIC_API_KEY and len(message.content) > 20:
         CONTEXT_PATTERNS = [
             "je vais te", "je vais vous", "t'es mort", "tu es mort",
             "je te retrouve", "adresse", "tu vas voir", "je vais venir"
@@ -938,7 +930,7 @@ async def on_message(message):
         if sec_ch:
             await sec_ch.send(content=f"💙 {mention_staff} — Alerte bien-être, intervention discrète recommandée.", embed=e_distress)
         # MP chaleureux via IA
-        if GROQ_API_KEY:
+        if ANTHROPIC_API_KEY:
             support_prompt = [{
                 "role": "user",
                 "content": (
@@ -948,7 +940,7 @@ async def on_message(message):
                     f"Ton style : doux, empathique, jamais condescendant. Pas d'emojis excessifs."
                 )
             }]
-            support_msg = await call_groq(support_prompt)
+            support_msg = await call_claude(support_prompt)
             try:
                 e_dm = discord.Embed(
                     title=f"🌸 Kozakura te parle — {guild.name}",
@@ -961,7 +953,7 @@ async def on_message(message):
 
     # ── Traduction automatique ────────────────────────────────────────────────
     if (
-        GROQ_API_KEY
+        ANTHROPIC_API_KEY
         and len(message.content.split()) >= 5
         and not str(message.channel.id) in tickets_db.get(str(guild.id), {})
         and autotrad_db.get(str(guild.id), {}).get(str(message.channel.id), False)
@@ -975,7 +967,7 @@ async def on_message(message):
             )
         }]
         try:
-            trad_response = await call_groq(detect_prompt)
+            trad_response = await call_claude(detect_prompt)
             if trad_response and not trad_response.lower().startswith("oui"):
                 # Parser la réponse
                 if "TRADUCTION:" in trad_response:
@@ -1034,7 +1026,7 @@ async def on_message(message):
     if any(ign in channel_low for ign in AI_IGNORE_CHANNELS):
         return
 
-    if not GROQ_API_KEY:
+    if not ANTHROPIC_API_KEY:
         return
 
     # Conditions pour répondre :
@@ -1126,7 +1118,7 @@ async def on_message(message):
         level = get_level(xp_db.get(gid, {}).get(uid, 0))
         sancs = len(sanctions_db.get(gid, {}).get(uid, []))
         member_ctx = {"days": days, "level": level, "sanctions": sancs}
-        response = await call_groq(ai_conversations[uid], member_ctx=member_ctx)
+        response = await call_claude(ai_conversations[uid], member_ctx=member_ctx)
 
     # Sauvegarder la réponse dans l'historique
     ai_conversations[uid].append({"role": "assistant", "content": response})
@@ -2702,7 +2694,7 @@ async def help(ctx, categorie: str = None):
 
         elif cat == "ia":
             e.title = "🤖 Intelligence Artificielle"
-            e.description = "Powered by **Groq • Llama 3** — Mentionne le bot ou écris dans `🧠・ia`"
+            e.description = "Powered by **Claude (Anthropic)** — Mentionne le bot ou écris dans `🧠・ia`"
             e.add_field(name="@Kozakura [message]",       value="Parle directement au bot n'importe où", inline=False)
             e.add_field(name="!ai [question]",            value="Pose une question à l'IA", inline=False)
             e.add_field(name="!mood",                     value="Analyse l'ambiance des 50 derniers messages du salon 🌸", inline=False)
@@ -5556,12 +5548,12 @@ async def send_embed(ctx, titre: str, couleur: str = "bleu", *, contenu: str):
 @bot.command(name="ai")
 async def ai_command(ctx, *, question: str):
     """!ai [question] — Pose une question à l'IA Kozakura"""
-    if not GROQ_API_KEY:
-        return await ctx.send("❌ L'IA n'est pas configurée (clé GROQ manquante).")
+    if not ANTHROPIC_API_KEY:
+        return await ctx.send("❌ L'IA n'est pas configurée (clé ANTHROPIC_API_KEY manquante).")
 
     async with ctx.typing():
         messages = [{"role": "user", "content": f"{ctx.author.display_name}: {question}"}]
-        response = await call_groq(messages)
+        response = await call_claude(messages)
 
     e = discord.Embed(
         description=response,
@@ -5569,14 +5561,14 @@ async def ai_command(ctx, *, question: str):
         timestamp=datetime.utcnow()
     )
     e.set_author(name=f"🤖 Kozakura AI — réponse à {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
-    e.set_footer(text="Powered by Groq • Llama 3")
+    e.set_footer(text="Powered by Claude (Anthropic)")
     await ctx.reply(embed=e)
 
 @bot.command(name="announce")
 @commands.has_permissions(administrator=True)
 async def ai_announce(ctx, *, sujet: str):
     """!announce [sujet] — Génère une annonce stylée avec l'IA"""
-    if not GROQ_API_KEY:
+    if not ANTHROPIC_API_KEY:
         return await ctx.send("❌ L'IA n'est pas configurée.")
 
     async with ctx.typing():
@@ -5586,7 +5578,7 @@ async def ai_announce(ctx, *, sujet: str):
                       f"Utilise des emojis Discord, du **gras**, et structure bien l'annonce. Maximum 400 mots. "
                       f"Le serveur s'appelle Kozakura."
         }]
-        response = await call_groq(messages)
+        response = await call_claude(messages)
 
     e = discord.Embed(
         title="📢 Annonce",
@@ -5625,7 +5617,7 @@ async def ai_announce(ctx, *, sujet: str):
 @commands.has_permissions(kick_members=True)
 async def ai_resume(ctx, nb_messages: int = 20):
     """!resume [nb] — Résume les derniers messages du salon avec l'IA"""
-    if not GROQ_API_KEY:
+    if not ANTHROPIC_API_KEY:
         return await ctx.send("❌ L'IA n'est pas configurée.")
 
     nb_messages = min(nb_messages, 50)
@@ -5647,7 +5639,7 @@ async def ai_resume(ctx, nb_messages: int = 20):
             "content": f"Résume cette conversation Discord en français de manière concise et claire. "
                       f"Identifie les sujets principaux, les points importants et l'ambiance générale :\n\n{conversation}"
         }]
-        response = await call_groq(prompt)
+        response = await call_claude(prompt)
 
     e = discord.Embed(
         title=f"📝 Résumé des {nb_messages} derniers messages",
@@ -5662,7 +5654,7 @@ async def ai_resume(ctx, nb_messages: int = 20):
 @commands.has_permissions(kick_members=True)
 async def ai_analyse(ctx, member: discord.Member):
     """!analyse @membre — Analyse le comportement d'un membre avec l'IA"""
-    if not GROQ_API_KEY:
+    if not ANTHROPIC_API_KEY:
         return await ctx.send("❌ L'IA n'est pas configurée.")
 
     gid = str(ctx.guild.id)
@@ -5693,7 +5685,7 @@ async def ai_analyse(ctx, member: discord.Member):
                       f"ses points positifs, ses points négatifs, et une recommandation pour le staff. "
                       f"Sois objectif et professionnel :\n\n{data_str}"
         }]
-        response = await call_groq(prompt)
+        response = await call_claude(prompt)
 
     e = discord.Embed(
         title=f"🔍 Analyse IA — {member.display_name}",
@@ -5750,8 +5742,8 @@ async def setautotrad(ctx, state: str, channel: discord.TextChannel = None):
 @bot.command(name="mood")
 async def mood(ctx):
     """!mood — L'IA analyse l'ambiance générale des 50 derniers messages"""
-    if not GROQ_API_KEY:
-        return await ctx.send("❌ Clé API Groq non configurée.")
+    if not ANTHROPIC_API_KEY:
+        return await ctx.send("❌ Clé API Anthropic non configurée.")
     async with ctx.typing():
         messages_raw = []
         async for msg in ctx.channel.history(limit=50):
@@ -5765,7 +5757,7 @@ async def mood(ctx):
             f"Analyse l'ambiance générale de cette conversation Discord (serveur: {ctx.guild.name}). "
             f"Décris en 3-4 phrases l'humeur, le ton, et l'énergie du salon. "
             f"Utilise des emojis japonais/anime. Sois créatif et expressif.\n\n---\n{sample}"}]
-        response = await call_groq(prompt)
+        response = await call_claude(prompt)
     e = discord.Embed(
         title="🌸 Analyse d'Ambiance — Kozakura IA",
         description=response,
@@ -5777,8 +5769,8 @@ async def mood(ctx):
 @bot.command(name="roast")
 async def roast(ctx, member: discord.Member = None):
     """!roast @membre — L'IA génère un roast drôle et bienveillant basé sur les stats"""
-    if not GROQ_API_KEY:
-        return await ctx.send("❌ Clé API Groq non configurée.")
+    if not ANTHROPIC_API_KEY:
+        return await ctx.send("❌ Clé API Anthropic non configurée.")
     member = member or ctx.author
     gid = str(ctx.guild.id); uid = str(member.id)
     xp   = xp_db.get(gid, {}).get(uid, 0)
@@ -5798,7 +5790,7 @@ async def roast(ctx, member: discord.Member = None):
             f"Nombre de rôles: {roles_count}. "
             f"Style anime/japonais, max 150 mots, avec emojis. "
             f"C'est pour rire, reste gentil et créatif !"}]
-        response = await call_groq(prompt)
+        response = await call_claude(prompt)
     e = discord.Embed(
         title=f"🔥 Roast de {member.display_name}",
         description=response,
@@ -5811,14 +5803,14 @@ async def roast(ctx, member: discord.Member = None):
 @bot.command(name="conseil")
 async def conseil(ctx):
     """!conseil — L'IA donne un conseil de vie profond"""
-    if not GROQ_API_KEY:
-        return await ctx.send("❌ Clé API Groq non configurée.")
+    if not ANTHROPIC_API_KEY:
+        return await ctx.send("❌ Clé API Anthropic non configurée.")
     async with ctx.typing():
         prompt = [{"role": "user", "content":
             "Donne un conseil de vie profond, inspirant et original. "
             "Style poétique avec des métaphores japonaises/anime (cerisiers, samouraïs, katana, etc.). "
             "Max 100 mots. Termine par un emoji japonais."}]
-        response = await call_groq(prompt)
+        response = await call_claude(prompt)
     e = discord.Embed(
         title="🌸 Conseil de Kozakura",
         description=f"*{response}*",
@@ -5830,8 +5822,8 @@ async def conseil(ctx):
 @bot.command(name="histoire")
 async def histoire(ctx):
     """!histoire — L'IA génère une courte histoire avec des membres du serveur"""
-    if not GROQ_API_KEY:
-        return await ctx.send("❌ Clé API Groq non configurée.")
+    if not ANTHROPIC_API_KEY:
+        return await ctx.send("❌ Clé API Anthropic non configurée.")
     import random
     # Prendre 3-5 membres aléatoires du serveur (non-bots)
     members_sample = random.sample(
@@ -5845,7 +5837,7 @@ async def histoire(ctx):
             f"dans un univers anime/japonais (ninjas, samouraïs, magie, Japon féodal...) "
             f"en incluant CES vrais membres du serveur '{ctx.guild.name}' : {names}. "
             f"L'histoire doit être positive, créative et amusante. Utilise des emojis."}]
-        response = await call_groq(prompt)
+        response = await call_claude(prompt)
     e = discord.Embed(
         title="📜 Histoire de Kozakura",
         description=response,
@@ -5903,7 +5895,7 @@ async def _save_ticket_transcript(guild, channel, ticket_data):
 # ─── RÉSUMÉ AUTOMATIQUE À LA FERMETURE DES TICKETS ───────────────────────────
 async def ai_summarize_ticket(guild, channel, ticket_data):
     """Résume automatiquement un ticket à sa fermeture"""
-    if not GROQ_API_KEY:
+    if not ANTHROPIC_API_KEY:
         return
 
     try:
@@ -5925,7 +5917,7 @@ async def ai_summarize_ticket(guild, channel, ticket_data):
                       f"et le ton général de l'échange. Sois concis :\n\n{conversation}"
         }]
 
-        summary = await call_groq(prompt)
+        summary = await call_claude(prompt)
 
         # Envoyer le résumé dans les logs tickets
         log_ch_id = get_cfg(guild.id, "ticket_log_channel")
@@ -6180,7 +6172,7 @@ async def track_message_count(message):
 @bot.command(name="imagine")
 async def ai_imagine(ctx, *, description: str):
     """!imagine [description] — Génère une description d'image détaillée avec l'IA"""
-    if not GROQ_API_KEY:
+    if not ANTHROPIC_API_KEY:
         return await ctx.send("❌ L'IA n'est pas configurée.")
 
     async with ctx.typing():
@@ -6193,7 +6185,7 @@ async def ai_imagine(ctx, *, description: str):
                 f"suivi de mots-clés style 'prompt' séparés par des virgules."
             )
         }]
-        response = await call_groq(prompt)
+        response = await call_claude(prompt)
 
     e = discord.Embed(
         title=f"🎨 Imagine — {description[:50]}",
@@ -6211,7 +6203,7 @@ async def ai_traduis(ctx, langue: str = "anglais", *, texte: str):
     Exemples : !traduis anglais Bonjour tout le monde
                !traduis espagnol Comment ça va ?
     """
-    if not GROQ_API_KEY:
+    if not ANTHROPIC_API_KEY:
         return await ctx.send("❌ L'IA n'est pas configurée.")
 
     async with ctx.typing():
@@ -6219,7 +6211,7 @@ async def ai_traduis(ctx, langue: str = "anglais", *, texte: str):
             "role": "user",
             "content": f"Traduis ce texte en {langue}. Réponds UNIQUEMENT avec la traduction, sans explications :\n\n{texte}"
         }]
-        response = await call_groq(prompt)
+        response = await call_claude(prompt)
 
     e = discord.Embed(color=discord.Color.blue(), timestamp=datetime.utcnow())
     e.add_field(name="📝 Original", value=texte[:500], inline=False)
@@ -6231,7 +6223,7 @@ async def ai_traduis(ctx, langue: str = "anglais", *, texte: str):
 @commands.has_permissions(kick_members=True)
 async def ai_moderation(ctx, member: discord.Member, *, raison: str = None):
     """!moderia @membre [raison] — L'IA analyse et propose une sanction"""
-    if not GROQ_API_KEY:
+    if not ANTHROPIC_API_KEY:
         return await ctx.send("❌ L'IA n'est pas configurée.")
 
     gid = str(ctx.guild.id)
@@ -6256,7 +6248,7 @@ async def ai_moderation(ctx, member: discord.Member, *, raison: str = None):
                 f"et une justification courte. Sois juste et proportionnel."
             )
         }]
-        response = await call_groq(prompt)
+        response = await call_claude(prompt)
 
     e = discord.Embed(
         title=f"🤖 Analyse IA — {member.display_name}",
@@ -7680,7 +7672,7 @@ _STATUTS = [
     (discord.ActivityType.watching,   "⛩️ Surveille le serveur"),
     (discord.ActivityType.playing,    "🗡️ En garde"),
     (discord.ActivityType.watching,   "🌙 Veille sur vous"),
-    (discord.ActivityType.listening,  "✨ Powered by Groq"),
+    (discord.ActivityType.listening,  "✨ Powered by Claude"),
     (discord.ActivityType.playing,    "🎋 Mode zen activé"),
     (discord.ActivityType.watching,   "🌸 Les fleurs de cerisier tomber"),
     (discord.ActivityType.listening,  "🏮 Les prières du temple"),
