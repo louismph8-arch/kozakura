@@ -1242,7 +1242,7 @@ async def ban(ctx, member: discord.Member, *, reason="Aucune raison"):
     await dm(member, "🔨 Tu as été banni",
         f"**Serveur :** {ctx.guild.name}\n**Raison :** {reason}\n\nSi tu penses que c'est une erreur, contacte un administrateur.",
         color=discord.Color.dark_red())
-    await member.ban(reason=reason)
+    await member.ban(reason=reason, delete_message_days=7)
     e = await log_sanction(ctx.guild, member, "Ban", reason, ctx.author)
     await ctx.send(embed=e)
 
@@ -4171,7 +4171,7 @@ async def honeypot_listener(message):
     age = (datetime.utcnow() - member.created_at.replace(tzinfo=None)).days
     if age < 7:
         try:
-            await member.ban(reason="🍯 Honeypot — compte suspect")
+            await member.ban(reason="🍯 Honeypot — compte suspect", delete_message_days=7)
             await sec_ch.send(f"✅ {member} banni automatiquement (compte {age}j)")
         except Exception: pass
 
@@ -4970,7 +4970,7 @@ async def massbanconfirm(ctx):
                 await dm(member, "🔨 Tu as été banni",
                     f"**Serveur :** {ctx.guild.name}\n**Raison :** {reason}",
                     color=discord.Color.dark_red())
-                await member.ban(reason=f"[MassBan] {reason}")
+                await member.ban(reason=f"[MassBan] {reason}", delete_message_days=7)
             else:
                 user = await bot.fetch_user(uid)
                 await ctx.guild.ban(user, reason=f"[MassBan] {reason}")
@@ -6421,7 +6421,7 @@ def api_action(guild_id):
 
     async def do_action():
         if action == "ban" and member:
-            await member.ban(reason=reason)
+            await member.ban(reason=reason, delete_message_days=7)
         elif action == "kick" and member:
             await member.kick(reason=reason)
         elif action == "mute" and member:
