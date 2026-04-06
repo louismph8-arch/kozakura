@@ -2022,23 +2022,28 @@ async def setticketlog(ctx, *, arg: str):
 async def ticketpanel(ctx):
     """Envoie le panel de tickets avec les 4 boutons"""
     e = discord.Embed(
-        title="📩 Contacter le Support de Kozakura",
+        title="🌸  Kozakura — Support & Contact",
         description=(
-            "🌟 **Le support du serveur est disponible 24H/24 et 7J/7** 🌟\n\n"
-            "**◈ Les Tickets :**\n"
-            "Il y a 4 catégories de tickets mis à votre disposition :\n\n"
-            "⚒️ **Les tickets Gestion Staff :** Pour devenir staff, réclamer un rank up ou récupérer des rôles.\n\n"
-            "🔴 **Les tickets Gestion Abus :** Pour signaler un abus ou un conflit avec un membre ou staff. "
-            "Défends ton innocence si tu es muté injustement.\n\n"
-            "👑 **Les tickets B#tch :** Pour contacter la direction du serveur. "
-            "Décalages, fusions, fournisseurs...\n\n"
-            "🤝 **Les tickets Partenariat :** Pour proposer un partenariat avec le serveur.\n\n"
-            "⚠️ *Toute demande concernant les giveaways et concours nitro ne sont pas pris en charge.*\n\n"
-            "─ Support Kozakura"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "**Bienvenue au support officiel de Kozakura.**\n"
+            "Notre équipe est disponible **24h/24 · 7j/7** pour vous aider.\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "**⚒️  Gestion Staff**\n"
+            "` ` Candidatures, rank-up, récupération de rôles.\n\n"
+            "**🛡️  Gestion Abus**\n"
+            "` ` Signaler un abus, conflit ou contester une sanction.\n\n"
+            "**👑  Direction**\n"
+            "` ` Décalages, fusions, sujets stratégiques — C.O.D uniquement.\n\n"
+            "**🤝  Partenariat**\n"
+            "` ` Proposer un partenariat avec Kozakura.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "⚠️ *Les demandes hors-sujet ou abusives seront ignorées.*"
         ),
-        color=discord.Color.blurple()
+        color=discord.Color.from_rgb(255, 182, 193)
     )
-    e.set_footer(text=ctx.guild.name)
+    if ctx.guild.icon:
+        e.set_thumbnail(url=ctx.guild.icon.url)
+    e.set_footer(text="Kozakura Support  •  Cliquez sur un bouton ci-dessous")
     await ctx.send(embed=e, view=TicketPanelView())
     try: await ctx.message.delete()
     except Exception: pass
@@ -2047,24 +2052,47 @@ async def ticketpanel(ctx):
 class TicketPanelView(discord.ui.View):
     def __init__(self): super().__init__(timeout=None)
 
-    @discord.ui.button(label="⚒️ Contacter un Gestion Staff", style=discord.ButtonStyle.blurple, custom_id="ticket_staff", row=0)
+    @discord.ui.button(label="Gestion Staff", emoji="⚒️", style=discord.ButtonStyle.blurple, custom_id="ticket_staff", row=0)
     async def btn_staff(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await open_ticket(interaction, "staff")
+        await interaction.response.send_modal(TicketOpenModal("staff"))
 
-    @discord.ui.button(label="🔴 Contacter un Gestion Abus", style=discord.ButtonStyle.red, custom_id="ticket_abus", row=0)
+    @discord.ui.button(label="Gestion Abus", emoji="🛡️", style=discord.ButtonStyle.red, custom_id="ticket_abus", row=0)
     async def btn_abus(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await open_ticket(interaction, "abus")
+        await interaction.response.send_modal(TicketOpenModal("abus"))
 
-    @discord.ui.button(label="👑 Contacter B#tch", style=discord.ButtonStyle.grey, custom_id="ticket_cod", row=1)
+    @discord.ui.button(label="Direction", emoji="👑", style=discord.ButtonStyle.grey, custom_id="ticket_cod", row=1)
     async def btn_cod(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await open_ticket(interaction, "cod")
+        await interaction.response.send_modal(TicketOpenModal("cod"))
 
-    @discord.ui.button(label="🤝 Contacter Partenariat", style=discord.ButtonStyle.green, custom_id="ticket_partenariat", row=1)
+    @discord.ui.button(label="Partenariat", emoji="🤝", style=discord.ButtonStyle.green, custom_id="ticket_partenariat", row=1)
     async def btn_partenariat(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await open_ticket(interaction, "partenariat")
+        await interaction.response.send_modal(TicketOpenModal("partenariat"))
+
+# ─── MODAL D'OUVERTURE DE TICKET ─────────────────────────────────────────────
+class TicketOpenModal(discord.ui.Modal):
+    subject = discord.ui.TextInput(
+        label="Sujet",
+        placeholder="Résumé en une ligne de ta demande...",
+        style=discord.TextStyle.short,
+        required=True, max_length=100)
+    details = discord.ui.TextInput(
+        label="Détails (optionnel)",
+        placeholder="Décris ta situation en détail...",
+        style=discord.TextStyle.paragraph,
+        required=False, max_length=1000)
+
+    def __init__(self, ticket_type: str):
+        cfg = TICKET_TYPES[ticket_type]
+        super().__init__(title=f"{cfg['emoji']} Ouvrir — {cfg['label']}")
+        self.ticket_type = ticket_type
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await open_ticket(interaction, self.ticket_type,
+                          subject=self.subject.value,
+                          details=self.details.value or "")
 
 # ─── FONCTION D'OUVERTURE DE TICKET ──────────────────────────────────────────
-async def open_ticket(interaction: discord.Interaction, ticket_type: str):
+async def open_ticket(interaction: discord.Interaction, ticket_type: str, subject: str = "", details: str = ""):
     guild  = interaction.guild
     author = interaction.user
     gid    = str(guild.id)
@@ -2086,7 +2114,8 @@ async def open_ticket(interaction: discord.Interaction, ticket_type: str):
     category = guild.get_channel(int(cat_id)) if cat_id else None
 
     ticket_number = len(tickets_db.get(gid, {})) + 1
-    channel_name  = f"{ticket_type}-{author.name.lower().replace(' ', '-')}-{ticket_number}"
+    safe_name     = author.name[:15].lower().replace(" ", "-")
+    channel_name  = f"ticket-{ticket_type}-{safe_name}-{ticket_number}"
 
     overwrites = get_ticket_overwrites(guild, author, ticket_type)
 
@@ -2099,6 +2128,7 @@ async def open_ticket(interaction: discord.Interaction, ticket_type: str):
         "author_name": author.name,
         "number":      ticket_number,
         "type":        ticket_type,
+        "subject":     subject,
         "status":      "open",
         "claimed_by":  None,
         "opened_at":   str(datetime.utcnow()),
@@ -2107,22 +2137,37 @@ async def open_ticket(interaction: discord.Interaction, ticket_type: str):
     save_json("tickets.json", tickets_db)
 
     # Mention du rôle concerné
-    role_id   = cfg.get("role_id")
-    role      = guild.get_role(role_id) if role_id else discord.utils.get(guild.roles, name=cfg["role"])
+    role_id      = cfg.get("role_id")
+    role         = guild.get_role(role_id) if role_id else discord.utils.get(guild.roles, name=cfg["role"])
     role_mention = role.mention if role else f"@{cfg['role']}"
 
+    # Embed de bienvenue
     e = discord.Embed(
-        title=f"{cfg['emoji']} Ticket {ticket_type.capitalize()} #{ticket_number}",
-        description=(
-            f"Bonjour {author.mention} ! 👋\n\n"
-            f"**{cfg['description']}**\n\n"
-            f"Décris ton problème en détail, notre équipe {role_mention} te répondra dès que possible.\n\n"
-            f"{'⚠️ Ce ticket est géré uniquement par **B#tch**.' if ticket_type == 'partenariat' else ''}"
-        ),
+        title=f"{cfg['emoji']}  Ticket #{ticket_number} — {cfg['label']}",
         color=cfg["color"],
         timestamp=datetime.utcnow()
     )
-    e.set_footer(text=f"Ticket #{ticket_number} • {author.name}")
+    e.add_field(name="👤 Membre", value=author.mention, inline=True)
+    e.add_field(name="🏷️ Type",   value=cfg["label"],   inline=True)
+    e.add_field(name="🔢 Numéro", value=f"#{ticket_number}", inline=True)
+    if subject:
+        e.add_field(name="📌 Sujet",    value=subject[:1024],  inline=False)
+    if details:
+        e.add_field(name="📝 Détails",  value=details[:1024],  inline=False)
+    rules_staff = f"› Notre équipe {role_mention} te répond dès que possible."
+    rules_part  = "› Ce ticket est réservé à **B#tch** (Direction)."
+    e.add_field(
+        name="📋 Règles du ticket",
+        value=(
+            "› Sois précis et respectueux.\n"
+            "› Ne ping pas inutilement le staff.\n"
+            "› Le ticket sera fermé si inactif.\n"
+            f"{rules_part if ticket_type == 'partenariat' else rules_staff}"
+        ),
+        inline=False
+    )
+    e.set_thumbnail(url=author.display_avatar.url)
+    e.set_footer(text=f"Kozakura Support  •  {author.name}", icon_url=author.display_avatar.url)
 
     await ticket_channel.send(
         content=f"{author.mention} {role_mention}",
@@ -2133,43 +2178,102 @@ async def open_ticket(interaction: discord.Interaction, ticket_type: str):
     await interaction.response.send_message(
         f"✅ Ton ticket a été créé : {ticket_channel.mention}", ephemeral=True)
 
-    le = discord.Embed(title=f"🎫 Ticket Ouvert — {ticket_type.capitalize()}",
+    le = discord.Embed(
+        title=f"🎫 Ticket Ouvert — {cfg['label']}",
         description=f"Par {author.mention} → {ticket_channel.mention}",
         color=cfg["color"], timestamp=datetime.utcnow())
     le.add_field(name="Ticket", value=f"#{ticket_number}")
-    le.add_field(name="Type",   value=ticket_type.capitalize())
+    le.add_field(name="Type",   value=cfg["label"])
     le.add_field(name="Membre", value=f"{author} ({author.id})")
+    if subject:
+        le.add_field(name="Sujet", value=subject[:256], inline=False)
     await log_ticket(guild, le)
 
 # ─── VIEW CONTRÔLES DU TICKET ─────────────────────────────────────────────────
-class TicketControlView(discord.ui.View):
-    def __init__(self): super().__init__(timeout=None)
+TICKET_PRIORITY_LABEL = {
+    "urgent":  "🔴 URGENT",
+    "haute":   "🟠 Haute",
+    "normale": "🔵 Normale",
+    "basse":   "🟢 Basse",
+}
 
-    @discord.ui.button(label="🔒 Fermer", style=discord.ButtonStyle.red, custom_id="tc_close")
+class PrioritySelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="Priorité Urgente",  value="urgent",  emoji="🔴", description="Nécessite une attention immédiate"),
+            discord.SelectOption(label="Priorité Haute",    value="haute",   emoji="🟠", description="À traiter rapidement"),
+            discord.SelectOption(label="Priorité Normale",  value="normale", emoji="🔵", description="Flux standard"),
+            discord.SelectOption(label="Priorité Basse",    value="basse",   emoji="🟢", description="Pas urgent"),
+        ]
+        super().__init__(placeholder="🏷️ Définir la priorité...", options=options,
+                         custom_id="tc_priority", row=1, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        niveau = self.values[0]
+        gid = str(interaction.guild_id); tid = str(interaction.channel_id)
+        if gid not in tickets_db or tid not in tickets_db[gid]:
+            return await interaction.response.send_message("❌ Pas un ticket.", ephemeral=True)
+        tickets_db[gid][tid]["priority"] = niveau
+        save_json("tickets.json", tickets_db)
+        color = TICKET_PRIORITY_COLORS[niveau]
+        label = TICKET_PRIORITY_LABEL[niveau]
+        ch_name = interaction.channel.name
+        for p in ("urgent-", "haute-", "normale-", "basse-"):
+            if ch_name.startswith(p):
+                ch_name = ch_name[len(p):]
+                break
+        try:
+            await interaction.channel.edit(name=f"{niveau}-{ch_name}")
+        except Exception:
+            pass
+        e = discord.Embed(
+            title=f"{label}  •  Priorité mise à jour",
+            description=f"Ce ticket est maintenant en priorité **{label}**.",
+            color=color, timestamp=datetime.utcnow()
+        )
+        e.set_footer(text=f"Modifié par {interaction.user}", icon_url=interaction.user.display_avatar.url)
+        await interaction.response.send_message(embed=e)
+
+
+class TicketControlView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(PrioritySelect())
+
+    @discord.ui.button(label="Fermer", emoji="🔒", style=discord.ButtonStyle.red, custom_id="tc_close", row=0)
     async def close_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
         await interaction.response.send_modal(CloseTicketModal())
 
-    @discord.ui.button(label="✋ Claim", style=discord.ButtonStyle.green, custom_id="tc_claim")
+    @discord.ui.button(label="Claim", emoji="✋", style=discord.ButtonStyle.green, custom_id="tc_claim", row=0)
     async def claim_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
         gid = str(interaction.guild_id); tid = str(interaction.channel_id)
         data = tickets_db.get(gid, {}).get(tid)
         if not data: return await interaction.response.send_message("❌ Pas un ticket.", ephemeral=True)
-        if data.get("claimed_by"):
+        # Toggle: si déjà claim par soi-même → unclaim
+        if data.get("claimed_by") and str(data["claimed_by"]) == str(interaction.user.id):
+            tickets_db[gid][tid]["claimed_by"] = None
+            save_json("tickets.json", tickets_db)
+            e = discord.Embed(title="✋ Ticket Unclaim",
+                description=f"{interaction.user.mention} a retiré sa prise en charge.",
+                color=discord.Color.orange(), timestamp=datetime.utcnow())
+            await interaction.response.send_message(embed=e)
+        elif data.get("claimed_by"):
             claimer = interaction.guild.get_member(int(data["claimed_by"]))
             return await interaction.response.send_message(
                 f"❌ Ce ticket est déjà claim par {claimer.mention if claimer else 'quelqu\'un'}.", ephemeral=True)
-        tickets_db[gid][tid]["claimed_by"] = interaction.user.id
-        save_json("tickets.json", tickets_db)
-        e = discord.Embed(title="✋ Ticket Claim",
-            description=f"{interaction.user.mention} a pris en charge ce ticket.",
-            color=discord.Color.green(), timestamp=datetime.utcnow())
-        await interaction.response.send_message(embed=e)
-        le = discord.Embed(title="✋ Ticket Claim",
-            description=f"Ticket #{data['number']} claim par {interaction.user.mention}",
-            color=discord.Color.green(), timestamp=datetime.utcnow())
-        await log_ticket(interaction.guild, le)
+        else:
+            tickets_db[gid][tid]["claimed_by"] = interaction.user.id
+            save_json("tickets.json", tickets_db)
+            e = discord.Embed(title="✋ Ticket Claim",
+                description=f"{interaction.user.mention} a pris en charge ce ticket.",
+                color=discord.Color.green(), timestamp=datetime.utcnow())
+            await interaction.response.send_message(embed=e)
+            le = discord.Embed(title="✋ Ticket Claim",
+                description=f"Ticket #{data['number']} claim par {interaction.user.mention}",
+                color=discord.Color.green(), timestamp=datetime.utcnow())
+            await log_ticket(interaction.guild, le)
 
-    @discord.ui.button(label="📋 Infos", style=discord.ButtonStyle.grey, custom_id="tc_info")
+    @discord.ui.button(label="Infos", emoji="📋", style=discord.ButtonStyle.grey, custom_id="tc_info", row=0)
     async def info_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
         gid = str(interaction.guild_id); tid = str(interaction.channel_id)
         data = tickets_db.get(gid, {}).get(tid)
@@ -2178,20 +2282,29 @@ class TicketControlView(discord.ui.View):
         if data.get("claimed_by"):
             m = interaction.guild.get_member(int(data["claimed_by"]))
             claimer = m.mention if m else "Inconnu"
-        e = discord.Embed(title="📋 Infos du Ticket", color=discord.Color.blurple())
-        e.add_field(name="Numéro",  value=f"#{data['number']}")
-        e.add_field(name="Type",    value=data.get("type", "?").capitalize())
-        e.add_field(name="Auteur",  value=data['author_name'])
-        e.add_field(name="Statut",  value="🟢 Ouvert" if data["status"] == "open" else "🔴 Fermé")
-        e.add_field(name="Claim",   value=claimer)
-        e.add_field(name="Ouvert",  value=data["opened_at"][:16])
+        cfg = TICKET_TYPES.get(data.get("type", ""), {})
+        priority = TICKET_PRIORITY_LABEL.get(data.get("priority", "normale"), "🔵 Normale")
+        e = discord.Embed(
+            title=f"📋  Ticket #{data['number']} — Infos",
+            color=cfg.get("color", discord.Color.blurple()),
+            timestamp=datetime.utcnow()
+        )
+        e.add_field(name="👤 Auteur",    value=data["author_name"],  inline=True)
+        e.add_field(name="🏷️ Type",      value=data.get("type","?").capitalize(), inline=True)
+        e.add_field(name="🔢 Numéro",    value=f"#{data['number']}", inline=True)
+        e.add_field(name="📊 Statut",    value="🟢 Ouvert" if data["status"] == "open" else "🔴 Fermé", inline=True)
+        e.add_field(name="✋ Claim",     value=claimer, inline=True)
+        e.add_field(name="🏷️ Priorité",  value=priority, inline=True)
+        if data.get("subject"):
+            e.add_field(name="📌 Sujet", value=data["subject"][:256], inline=False)
+        e.add_field(name="⏰ Ouvert le", value=data["opened_at"][:16], inline=False)
         await interaction.response.send_message(embed=e, ephemeral=True)
 
 # ─── MODAL FERMETURE ──────────────────────────────────────────────────────────
-class CloseTicketModal(discord.ui.Modal, title="Fermer le ticket"):
+class CloseTicketModal(discord.ui.Modal, title="🔒 Fermer le ticket"):
     reason = discord.ui.TextInput(
         label="Raison de fermeture",
-        placeholder="Ex: Problème résolu...",
+        placeholder="Ex: Problème résolu, demande traitée...",
         style=discord.TextStyle.short,
         required=False, max_length=200)
 
@@ -2202,8 +2315,9 @@ class CloseTicketModal(discord.ui.Modal, title="Fermer le ticket"):
         if not data:
             return await interaction.response.send_message("❌ Pas un ticket valide.", ephemeral=True)
 
-        reason_text = self.reason.value or "Aucune raison"
+        reason_text = self.reason.value or "Aucune raison spécifiée"
         author = guild.get_member(int(data["author_id"])) if data.get("author_id") else None
+        cfg = TICKET_TYPES.get(data.get("type", ""), {})
 
         tickets_db[gid][tid]["status"]       = "closed"
         tickets_db[gid][tid]["closed_by"]    = str(interaction.user.id)
@@ -2211,16 +2325,41 @@ class CloseTicketModal(discord.ui.Modal, title="Fermer le ticket"):
         tickets_db[gid][tid]["close_reason"] = reason_text
         save_json("tickets.json", tickets_db)
 
-        e = discord.Embed(title="🔒 Ticket Fermé",
-            description=f"Fermé par {interaction.user.mention}\n**Raison :** {reason_text}",
-            color=discord.Color.red(), timestamp=datetime.utcnow())
+        e = discord.Embed(
+            title="🔒  Ticket Fermé",
+            description=(
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"**Fermé par** {interaction.user.mention}\n"
+                f"**Raison :** {reason_text}\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.from_rgb(237, 66, 69),
+            timestamp=datetime.utcnow()
+        )
+        e.add_field(name="🎫 Ticket", value=f"#{data['number']}", inline=True)
+        e.add_field(name="🏷️ Type",   value=data.get("type","?").capitalize(), inline=True)
+        e.add_field(name="👤 Auteur", value=data["author_name"], inline=True)
+        e.set_footer(text="Suppression dans 10 secondes…")
         await interaction.response.send_message(embed=e)
 
         if author:
-            await dm(author, "🎫 Ton ticket a été fermé",
-                f"**Serveur :** {guild.name}\n**Ticket :** #{data['number']}\n"
-                f"**Type :** {data.get('type','?').capitalize()}\n**Raison :** {reason_text}\n\n"
-                "Merci d'avoir contacté le support !", color=discord.Color.orange())
+            dm_e = discord.Embed(
+                title="🌸  Ton ticket a été fermé",
+                description=(
+                    f"**Serveur :** {guild.name}\n"
+                    f"**Ticket :** #{data['number']} — {data.get('type','?').capitalize()}\n"
+                    f"**Fermé par :** {interaction.user}\n"
+                    f"**Raison :** {reason_text}\n\n"
+                    "Merci d'avoir contacté le support Kozakura 💌"
+                ),
+                color=discord.Color.from_rgb(255, 182, 193),
+                timestamp=datetime.utcnow()
+            )
+            dm_e.set_footer(text="Kozakura Support")
+            try:
+                await author.send(embed=dm_e)
+            except Exception:
+                pass
 
         le = discord.Embed(title="🔒 Ticket Fermé",
             description=f"Fermé par {interaction.user.mention}",
@@ -2409,22 +2548,28 @@ async def list_tickets(ctx):
     data = tickets_db.get(gid, {})
     open_tickets = [(tid, t) for tid, t in data.items() if t.get("status") == "open"]
 
-    e = discord.Embed(title=f"🎫 Tickets Ouverts ({len(open_tickets)})",
-        color=discord.Color.blurple(), timestamp=datetime.utcnow())
+    e = discord.Embed(
+        title=f"🎫  Tickets Ouverts — {len(open_tickets)} actif(s)",
+        color=discord.Color.from_rgb(255, 182, 193),
+        timestamp=datetime.utcnow()
+    )
+    e.set_footer(text=f"Kozakura Support  •  {ctx.guild.name}")
 
     if not open_tickets:
-        e.description = "Aucun ticket ouvert en ce moment ✅"
+        e.description = "✅ Aucun ticket ouvert en ce moment."
     else:
         for tid, t in open_tickets[:15]:
             ch = ctx.guild.get_channel(int(tid))
-            claim_status = "Non claim"
+            claim_val = "—"
             if t.get("claimed_by"):
                 m = ctx.guild.get_member(int(t["claimed_by"]))
-                claim_status = f"✋ {m.name if m else 'Inconnu'}"
+                claim_val = f"✋ {m.name if m else 'Inconnu'}"
+            priority = TICKET_PRIORITY_LABEL.get(t.get("priority", "normale"), "🔵 Normale")
+            subject_line = f"\n📌 {t['subject'][:60]}" if t.get("subject") else ""
             e.add_field(
-                name=f"#{t['number']} [{t.get('type','?').upper()}] — {t['author_name']}",
-                value=f"Salon: {ch.mention if ch else 'Supprimé'}\nClaim: {claim_status}",
-                inline=True)
+                name=f"{TICKET_PRIORITY_EMOJI.get(t.get('priority','normale'),'🔵')} #{t['number']} · {t.get('type','?').upper()} — {t['author_name']}",
+                value=f"{ch.mention if ch else '`Supprimé`'}  ·  {claim_val}{subject_line}",
+                inline=False)
     await ctx.send(embed=e)
 
 # ─── PANEL ADMIN ──────────────────────────────────────────────────────────────
