@@ -74,7 +74,13 @@ async def call_groq(messages: list, member_ctx: dict = None) -> str:
                     data = await resp.json()
                     return data["choices"][0]["message"]["content"].strip()
                 else:
-                    return f"❌ Erreur API ({resp.status})"
+                    try:
+                        err = await resp.json()
+                        detail = err.get("error", {}).get("message", str(err))
+                    except Exception:
+                        detail = await resp.text()
+                    print(f"[Groq] Erreur {resp.status}: {detail}")
+                    return f"❌ Erreur API ({resp.status}) : {detail[:200]}"
     except asyncio.TimeoutError:
         return "⏰ Délai dépassé, réessaie !"
     except Exception as e:
