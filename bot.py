@@ -506,10 +506,23 @@ async def on_member_join(member):
     if len(raid_tracker) >= get_cfg(guild.id, "raid_threshold", 10):
         try:
             await member.kick(reason="Anti-raid automatique")
-            e = discord.Embed(title="🚨 ANTI-RAID", description=f"{member} expulsé",
-                color=discord.Color.dark_red(), timestamp=datetime.utcnow())
-            await log_security(guild, e)
-        except Exception: pass
+        except Exception:
+            pass
+        # Lockdown automatique si pas déjà actif
+        raid_count = len(raid_tracker)
+        await trigger_lockdown(
+            guild,
+            raison=f"Raid détecté — {raid_count} joins en 10 secondes",
+            triggered_by="🤖 Anti-Raid automatique"
+        )
+        e = discord.Embed(
+            title="🚨 ANTI-RAID DÉCLENCHÉ",
+            description=f"{member.mention} expulsé\n**{raid_count}** joins en 10 secondes",
+            color=discord.Color.dark_red(), timestamp=datetime.utcnow()
+        )
+        e.add_field(name="🔒 Lockdown", value="Activé automatiquement")
+        e.set_footer(text="Kozakura Security")
+        await log_security(guild, e)
         return
     ar = get_cfg(guild.id, "auto_role")
     if ar:
@@ -3652,6 +3665,44 @@ async def on_invite_delete(invite):
     e.set_footer(text="Kozakura Security")
     await log_security(invite.guild, e)
 
+# ── Helper lockdown (appelable sans ctx) ─────────────────────────────────────
+async def trigger_lockdown(guild, raison: str = "Mesure de sécurité d'urgence", triggered_by: str = "Anti-Raid automatique"):
+    """Verrouille tous les salons texte — peut être appelé sans contexte de commande."""
+    gid = str(guild.id)
+    if lockdown_active.get(gid):
+        return  # Déjà en lockdown
+    lockdown_active[gid] = True
+    locked = 0
+    for channel in guild.text_channels:
+        try:
+            overwrite = channel.overwrites_for(guild.default_role)
+            lockdown_backup[channel.id] = overwrite.pair()
+            overwrite.send_messages = False
+            await channel.set_permissions(guild.default_role, overwrite=overwrite,
+                reason=f"🔒 Lockdown auto : {raison}")
+            locked += 1
+        except Exception:
+            pass
+    e = discord.Embed(
+        title="🔒 SERVEUR EN LOCKDOWN",
+        description=f"**{locked}** salon(s) verrouillé(s)\n**Raison :** {raison}",
+        color=discord.Color.dark_red(),
+        timestamp=datetime.utcnow()
+    )
+    e.add_field(name="🛡️ Déclenché par", value=triggered_by)
+    e.add_field(name="🔓 Pour lever", value="`!unlockdown`")
+    e.set_footer(text="Kozakura Security")
+    await log_security(guild, e)
+    # Ping staff dans le salon de sécurité
+    staff_role = discord.utils.get(guild.roles, name="Gestion")
+    sec_ch = discord.utils.find(
+        lambda c: any(n in c.name.lower() for n in SECURITY_LOG_NAMES), guild.text_channels
+    )
+    if sec_ch and staff_role:
+        await sec_ch.send(f"🚨 {staff_role.mention} — **LOCKDOWN AUTOMATIQUE** : {raison}", embed=e)
+    elif sec_ch:
+        await sec_ch.send(f"🚨 **LOCKDOWN AUTOMATIQUE** : {raison}", embed=e)
+
 # ── Commandes Lockdown ────────────────────────────────────────────────────────
 @bot.command(name="lockdown")
 @commands.has_permissions(administrator=True)
@@ -4764,12 +4815,17 @@ async def check_antibot(member):
     e.add_field(name="Whitelist", value=f"Non autorisé\nUtilise `!addbotwhitelist {member.id}` pour l'autoriser")
     e.set_thumbnail(url=member.display_avatar.url)
 
-    # Alerte si raid de bots
+    # Alerte + lockdown si raid de bots
     if len(bot_raid_tracker) >= 3:
         e.add_field(name="⚠️ ALERTE RAID BOTS",
             value=f"**{len(bot_raid_tracker)} bots** ont tenté de rejoindre en 30 secondes !",
             inline=False)
         e.color = discord.Color.dark_red()
+        await trigger_lockdown(
+            guild,
+            raison=f"Raid de bots — {len(bot_raid_tracker)} bots en 30 secondes",
+            triggered_by="🤖 Anti-Bot automatique"
+        )
 
     await log(guild, e)
 
@@ -6220,8 +6276,17 @@ from flask import Flask, request, jsonify
 from threading import Thread
 
 # ── CORS helper ───────────────────────────────────────────────────────────────
+DASHBOARD_ORIGIN = os.getenv("DASHBOARD_ORIGIN", "")  # ex: https://mon-dashboard.railway.app
+
 def add_cors(response):
-    response.headers["Access-Control-Allow-Origin"]  = "*"
+    origin = request.headers.get("Origin", "")
+    if DASHBOARD_ORIGIN:
+        # Autoriser uniquement l'origine configurée
+        if origin == DASHBOARD_ORIGIN:
+            response.headers["Access-Control-Allow-Origin"] = origin
+    else:
+        # Fallback si non configuré (à éviter en production)
+        response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-API-Key"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
     return response
@@ -6232,6 +6297,25 @@ def add_cors(response):
 
 API_SECRET = os.getenv("DASHBOARD_SECRET", "")
 app_flask  = Flask(__name__)
+
+# ── Rate limiting anti brute-force (en mémoire) ───────────────────────────────
+_auth_attempts: dict = {}   # {ip: [timestamps]}
+AUTH_MAX_ATTEMPTS = 10      # tentatives max
+AUTH_WINDOW       = 60      # secondes
+
+def _get_ip():
+    return request.headers.get("X-Forwarded-For", request.remote_addr or "unknown").split(",")[0].strip()
+
+def _check_rate_limit_auth():
+    ip  = _get_ip()
+    now = time.time()
+    attempts = _auth_attempts.setdefault(ip, [])
+    # Purge les anciennes tentatives
+    _auth_attempts[ip] = [t for t in attempts if now - t < AUTH_WINDOW]
+    if len(_auth_attempts[ip]) >= AUTH_MAX_ATTEMPTS:
+        return False
+    _auth_attempts[ip].append(now)
+    return True
 
 @app_flask.after_request
 def after_request(response):
@@ -6244,10 +6328,17 @@ def handle_options(*args, **kwargs):
     return add_cors(Response())
 
 def check_auth():
-    return request.headers.get("X-API-Key") == API_SECRET
+    return request.headers.get("X-API-Key") == API_SECRET and bool(API_SECRET)
 
 def api_error(msg, code=403):
     return jsonify({"error": msg}), code
+
+def safe_int(val, default=None):
+    """Conversion int sécurisée — retourne default si val n'est pas un entier valide."""
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return default
 
 def member_to_dict(m):
     return {
@@ -6263,8 +6354,10 @@ def member_to_dict(m):
 # ── Auth ─────────────────────────────────────────────────────────────────────
 @app_flask.route("/api/auth", methods=["POST"])
 def api_auth():
+    if not _check_rate_limit_auth():
+        return api_error("Trop de tentatives, réessaie dans 1 minute", 429)
     key = request.json.get("key") if request.json else None
-    if key == API_SECRET:
+    if key and key == API_SECRET and bool(API_SECRET):
         return jsonify({"status": "ok", "token": API_SECRET})
     return api_error("Clé invalide", 401)
 
@@ -6292,7 +6385,7 @@ def api_stats():
 @app_flask.route("/api/<guild_id>/members")
 def api_members(guild_id):
     if not check_auth(): return api_error("Non autorisé")
-    guild = bot.get_guild(int(guild_id))
+    guild = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
     members = [member_to_dict(m) for m in guild.members if not m.bot]
     return jsonify({"members": members, "total": len(members)})
@@ -6300,8 +6393,8 @@ def api_members(guild_id):
 @app_flask.route("/api/<guild_id>/members/<member_id>")
 def api_member(guild_id, member_id):
     if not check_auth(): return api_error("Non autorisé")
-    guild  = bot.get_guild(int(guild_id))
-    member = guild.get_member(int(member_id)) if guild else None
+    guild  = bot.get_guild(safe_int(guild_id))
+    member = guild.get_member(safe_int(member_id)) if guild else None
     if not member: return api_error("Membre introuvable", 404)
     gid = str(guild.id)
     uid = str(member.id)
@@ -6322,9 +6415,9 @@ def api_action(guild_id):
     member_id = data.get("member_id")
     reason    = data.get("reason", "Action depuis le dashboard")
 
-    guild  = bot.get_guild(int(guild_id))
+    guild  = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
-    member = guild.get_member(int(member_id)) if member_id else None
+    member = guild.get_member(safe_int(member_id)) if member_id else None
 
     async def do_action():
         if action == "ban" and member:
@@ -6347,7 +6440,7 @@ def api_action(guild_id):
 @app_flask.route("/api/<guild_id>/sanctions")
 def api_sanctions(guild_id):
     if not check_auth(): return api_error("Non autorisé")
-    guild = bot.get_guild(int(guild_id))
+    guild = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
     gid   = str(guild.id)
     result = []
@@ -6365,7 +6458,7 @@ def api_sanctions(guild_id):
 @app_flask.route("/api/<guild_id>/tickets")
 def api_tickets(guild_id):
     if not check_auth(): return api_error("Non autorisé")
-    guild = bot.get_guild(int(guild_id))
+    guild = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
     gid   = str(guild.id)
     status_filter = request.args.get("status", "open")
@@ -6398,12 +6491,12 @@ def api_tickets(guild_id):
 @app_flask.route("/api/<guild_id>/tickets/<channel_id>/close", methods=["POST"])
 def api_close_ticket(guild_id, channel_id):
     if not check_auth(): return api_error("Non autorisé")
-    guild = bot.get_guild(int(guild_id))
+    guild = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
     gid = str(guild.id)
 
     async def do_close():
-        ch = guild.get_channel(int(channel_id))
+        ch = guild.get_channel(safe_int(channel_id))
         if ch:
             data = tickets_db.get(gid, {}).get(channel_id, {})
             tickets_db.setdefault(gid, {})[channel_id] = {
@@ -6424,7 +6517,7 @@ def api_close_ticket(guild_id, channel_id):
 @app_flask.route("/api/<guild_id>/security/shadowbans")
 def api_shadowbans(guild_id):
     if not check_auth(): return api_error("Non autorisé")
-    guild = bot.get_guild(int(guild_id))
+    guild = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
     gid = str(guild.id)
     result = []
@@ -6453,7 +6546,7 @@ def api_unshadowban(guild_id, member_id):
 @app_flask.route("/api/<guild_id>/security/watchlist")
 def api_watchlist(guild_id):
     if not check_auth(): return api_error("Non autorisé")
-    guild = bot.get_guild(int(guild_id))
+    guild = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
     gid = str(guild.id)
     result = []
@@ -6490,7 +6583,7 @@ def api_reports(guild_id):
 @app_flask.route("/api/<guild_id>/xp")
 def api_xp(guild_id):
     if not check_auth(): return api_error("Non autorisé")
-    guild = bot.get_guild(int(guild_id))
+    guild = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
     gid   = str(guild.id)
     result = []
@@ -6529,7 +6622,7 @@ def api_giveaways(guild_id):
 def api_create_giveaway(guild_id):
     if not check_auth(): return api_error("Non autorisé")
     data    = request.json or {}
-    guild   = bot.get_guild(int(guild_id))
+    guild   = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
     ch_id   = data.get("channel_id")
     channel = guild.get_channel(int(ch_id)) if ch_id else None
@@ -6568,7 +6661,7 @@ def api_create_giveaway(guild_id):
 @app_flask.route("/api/<guild_id>/trophees")
 def api_trophees(guild_id):
     if not check_auth(): return api_error("Non autorisé")
-    guild = bot.get_guild(int(guild_id))
+    guild = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
     gid   = str(guild.id)
     result = []
@@ -6604,7 +6697,7 @@ def api_set_config(guild_id):
 @app_flask.route("/api/<guild_id>/voice")
 def api_voice(guild_id):
     if not check_auth(): return api_error("Non autorisé")
-    guild = bot.get_guild(int(guild_id))
+    guild = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
     channels = []
     for vc in guild.voice_channels:
@@ -6631,10 +6724,10 @@ def api_voice_move(guild_id):
     data      = request.json or {}
     member_id = data.get("member_id")
     channel_id = data.get("channel_id")
-    guild  = bot.get_guild(int(guild_id))
+    guild  = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
-    member  = guild.get_member(int(member_id))
-    channel = guild.get_channel(int(channel_id))
+    member  = guild.get_member(safe_int(member_id))
+    channel = guild.get_channel(safe_int(channel_id))
     if not member or not channel: return api_error("Membre ou salon introuvable", 404)
     async def do_move():
         await member.move_to(channel, reason="Déplacé depuis le dashboard")
@@ -6645,8 +6738,8 @@ def api_voice_move(guild_id):
 def api_voice_disconnect(guild_id):
     if not check_auth(): return api_error("Non autorisé")
     member_id = (request.json or {}).get("member_id")
-    guild  = bot.get_guild(int(guild_id))
-    member = guild.get_member(int(member_id)) if guild else None
+    guild  = bot.get_guild(safe_int(guild_id))
+    member = guild.get_member(safe_int(member_id)) if guild else None
     if not member: return api_error("Membre introuvable", 404)
     async def do_dc():
         await member.move_to(None, reason="Déconnecté depuis le dashboard")
@@ -6660,9 +6753,9 @@ def api_send_message(guild_id):
     data       = request.json or {}
     channel_id = data.get("channel_id")
     content    = data.get("content", "")
-    guild      = bot.get_guild(int(guild_id))
+    guild      = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
-    channel = guild.get_channel(int(channel_id)) if channel_id else None
+    channel = guild.get_channel(safe_int(channel_id)) if channel_id else None
     if not channel: return api_error("Salon introuvable", 404)
     async def do_send():
         if data.get("embed"):
@@ -6681,7 +6774,7 @@ def api_send_message(guild_id):
 @app_flask.route("/api/<guild_id>/channels")
 def api_channels(guild_id):
     if not check_auth(): return api_error("Non autorisé")
-    guild = bot.get_guild(int(guild_id))
+    guild = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
     channels = [{"id": str(c.id), "name": c.name} for c in guild.text_channels]
     return jsonify({"channels": channels})
@@ -6690,7 +6783,7 @@ def api_channels(guild_id):
 @app_flask.route("/api/<guild_id>/roles")
 def api_roles(guild_id):
     if not check_auth(): return api_error("Non autorisé")
-    guild = bot.get_guild(int(guild_id))
+    guild = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
     roles = [{"id": str(r.id), "name": r.name, "color": str(r.color), "members": len(r.members)}
              for r in guild.roles if r.name != "@everyone"]
@@ -6700,9 +6793,9 @@ def api_roles(guild_id):
 def api_give_role(guild_id, role_id):
     if not check_auth(): return api_error("Non autorisé")
     member_id = (request.json or {}).get("member_id")
-    guild  = bot.get_guild(int(guild_id))
-    member = guild.get_member(int(member_id)) if guild else None
-    role   = guild.get_role(int(role_id)) if guild else None
+    guild  = bot.get_guild(safe_int(guild_id))
+    member = guild.get_member(safe_int(member_id)) if guild else None
+    role   = guild.get_role(safe_int(role_id)) if guild else None
     if not member or not role: return api_error("Introuvable", 404)
     async def do_give():
         await member.add_roles(role, reason="Ajouté depuis le dashboard")
@@ -6713,9 +6806,9 @@ def api_give_role(guild_id, role_id):
 def api_remove_role(guild_id, role_id):
     if not check_auth(): return api_error("Non autorisé")
     member_id = (request.json or {}).get("member_id")
-    guild  = bot.get_guild(int(guild_id))
-    member = guild.get_member(int(member_id)) if guild else None
-    role   = guild.get_role(int(role_id)) if guild else None
+    guild  = bot.get_guild(safe_int(guild_id))
+    member = guild.get_member(safe_int(member_id)) if guild else None
+    role   = guild.get_role(safe_int(role_id)) if guild else None
     if not member or not role: return api_error("Introuvable", 404)
     async def do_remove():
         await member.remove_roles(role, reason="Retiré depuis le dashboard")
@@ -6727,8 +6820,8 @@ def api_remove_role(guild_id, role_id):
 @app_flask.route("/api/<guild_id>/roles/<role_id>/delete", methods=["POST"])
 def api_delete_role(guild_id, role_id):
     if not check_auth(): return api_error("Non autorisé")
-    guild = bot.get_guild(int(guild_id))
-    role  = guild.get_role(int(role_id)) if guild else None
+    guild = bot.get_guild(safe_int(guild_id))
+    role  = guild.get_role(safe_int(role_id)) if guild else None
     if not role: return api_error("Rôle introuvable", 404)
     async def do_delete():
         await role.delete(reason="Supprimé depuis le dashboard")
@@ -6764,7 +6857,7 @@ def api_logs(guild_id):
 @app_flask.route("/api/<guild_id>/ranks")
 def api_ranks(guild_id):
     if not check_auth(): return api_error("Non autorisé")
-    guild = bot.get_guild(int(guild_id))
+    guild = bot.get_guild(safe_int(guild_id))
     if not guild: return api_error("Serveur introuvable", 404)
     RANK_ROLES_LIST = [
         ("***", "Mirai"), ("**", "Taiyō"), ("*", "Hoshi"),
@@ -6783,8 +6876,8 @@ def api_set_rank(guild_id):
     data      = request.json or {}
     member_id = data.get("member_id")
     rank_idx  = data.get("rank_index", 0)  # 0=***, 5=I
-    guild     = bot.get_guild(int(guild_id))
-    member    = guild.get_member(int(member_id)) if guild else None
+    guild     = bot.get_guild(safe_int(guild_id))
+    member    = guild.get_member(safe_int(member_id)) if guild else None
     if not member: return api_error("Membre introuvable", 404)
     RANK_ROLES_PAIRS = [("***","Mirai"),("**","Taiyō"),("*","Hoshi"),("III","Shin"),("II","Tsuki"),("I","Kage")]
     async def do_rank():
