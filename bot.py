@@ -1522,60 +1522,18 @@ async def send_welcome(guild: discord.Guild, member: discord.Member, give_xp: bo
     bar      = "🌸" * int(progress * 12) + "・" * (12 - int(progress * 12))
 
     e = discord.Embed(
-        title="✿ 桜 ようこそ — Bienvenue ! 桜 ✿",
+        title=f"🌸  Bienvenue sur Kozakura !",
         description=(
-            f"# 🎀 {member.mention}\n"
-            f"*Le serveur s'illumine d'une fleur de cerisier supplémentaire~* 🌸\n\n"
-            f"╔═══════════════════════════╗\n"
-            f"║  ✨ **Kozakura** est ravie de t'accueillir  ✨\n"
-            f"╚═══════════════════════════╝\n\n"
-            f"Explore, discute et deviens une légende de ce sanctuaire ⛩️\n"
-            f"N'hésite pas à consulter les salons d'informations\n"
-            f"pour commencer ton aventure ! 🗺️"
+            f"## {member.mention}\n"
+            f"Tu es le **{guild.member_count}ème** membre du serveur."
         ),
         color=SAKURA_PINK,
         timestamp=datetime.utcnow()
     )
     e.set_thumbnail(url=member.display_avatar.url)
-    if guild.icon:
-        e.set_image(url=guild.icon.url)
-
-    e.add_field(
-        name="🌸 Niveau & XP",
-        value=f"**Niveau** ✦ `{lvl}`\n**XP** ✦ `{new_xp}` / `{next_xp}`\n{bar}",
-        inline=True
-    )
-    e.add_field(
-        name="🏮 Rang du serveur",
-        value=f"**#{rank_pos}** sur `{len(sorted_lb)}` membres" if rank_pos else "*(nouveau)*",
-        inline=True
-    )
-    e.add_field(
-        name="🎁 Bonus offert",
-        value="**+50 XP** 🌸 cadeau de bienvenue !" if give_xp else "Bienvenue sur le serveur 🌸",
-        inline=True
-    )
-
-    account_age = (datetime.utcnow() - member.created_at.replace(tzinfo=None)).days
-    e.add_field(
-        name="📅 Présence",
-        value=(
-            f"**Rejoint** ✦ {member.joined_at.strftime('%d/%m/%Y') if member.joined_at else '?'}\n"
-            f"**Compte créé** ✦ il y a `{account_age}` jours"
-        ),
-        inline=True
-    )
-
-    roles = [r.mention for r in member.roles if r.name != "@everyone"]
-    e.add_field(
-        name=f"🎭 Rôles `({len(roles)})`",
-        value=", ".join(roles[:5]) + ("…" if len(roles) > 5 else "") if roles else "*aucun rôle*",
-        inline=True
-    )
-    e.set_footer(
-        text="✿ Kozakura Bot ✿ • 桜の加護があなたと共にありますように",
-        icon_url=guild.me.display_avatar.url
-    )
+    e.add_field(name="🎁 Bonus",  value=f"+50 XP offerts" if give_xp else "Bonne arrivée !", inline=True)
+    e.add_field(name="📊 Niveau", value=f"Niv. {lvl}  •  {new_xp} XP", inline=True)
+    e.set_footer(text="Kozakura", icon_url=guild.me.display_avatar.url)
     await chat_ch.send(embed=e)
 
 
