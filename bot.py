@@ -1522,18 +1522,24 @@ async def send_welcome(guild: discord.Guild, member: discord.Member, give_xp: bo
     bar      = "🌸" * int(progress * 12) + "・" * (12 - int(progress * 12))
 
     e = discord.Embed(
-        title=f"🌸  Bienvenue sur Kozakura !",
         description=(
-            f"## {member.mention}\n"
-            f"Tu es le **{guild.member_count}ème** membre du serveur."
+            f"## 🌸  Bienvenue, {member.mention} !\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Tu es le **{guild.member_count}ème** membre de **Kozakura**.\n"
         ),
         color=SAKURA_PINK,
         timestamp=datetime.utcnow()
     )
+    e.set_author(name=str(member), icon_url=member.display_avatar.url)
     e.set_thumbnail(url=member.display_avatar.url)
-    e.add_field(name="🎁 Bonus",  value=f"+50 XP offerts" if give_xp else "Bonne arrivée !", inline=True)
-    e.add_field(name="📊 Niveau", value=f"Niv. {lvl}  •  {new_xp} XP", inline=True)
-    e.set_footer(text="Kozakura", icon_url=guild.me.display_avatar.url)
+    if guild.banner:
+        e.set_image(url=guild.banner.url)
+    elif guild.icon:
+        e.set_image(url=guild.icon.url)
+    e.add_field(name="🎁 Bonus",   value="+50 XP offerts" if give_xp else "Bonne arrivée !", inline=True)
+    e.add_field(name="📊 Niveau",  value=f"Niv. {lvl}  •  {new_xp} XP", inline=True)
+    e.add_field(name="👥 Membres", value=str(guild.member_count), inline=True)
+    e.set_footer(text="Kozakura  •  Bon séjour parmi nous 🌸", icon_url=guild.me.display_avatar.url)
     await chat_ch.send(embed=e)
 
 
