@@ -1233,14 +1233,24 @@ def has_sanction_role(member, roles_list):
 
 # ─── MODÉRATION ───────────────────────────────────────────────────────────────
 @bot.command()
-async def ban(ctx, member: discord.Member, *, reason="Aucune raison"):
+async def ban(ctx, member: discord.Member = None, *, reason="Aucune raison"):
+    if member is None:
+        return await ctx.send("❌ Mentionne un membre : `!ban @membre [raison]`", delete_after=5)
     if not has_sanction_role(ctx.author, ROLES_BAN):
         return await ctx.send("❌ Tu n'as pas la permission de bannir.", delete_after=5)
-    # MP d'abord, AVANT le ban (après le ban le membre ne peut plus recevoir de MP)
+    if member.top_role >= ctx.guild.me.top_role:
+        return await ctx.send("❌ Je ne peux pas bannir ce membre (son rôle est supérieur ou égal au mien).", delete_after=5)
+    if member == ctx.author:
+        return await ctx.send("❌ Tu ne peux pas te bannir toi-même.", delete_after=5)
     await dm(member, "🔨 Tu as été banni",
         f"**Serveur :** {ctx.guild.name}\n**Raison :** {reason}\n\nSi tu penses que c'est une erreur, contacte un administrateur.",
         color=discord.Color.dark_red())
-    await member.ban(reason=reason, delete_message_days=7)
+    try:
+        await member.ban(reason=reason, delete_message_days=7)
+    except discord.Forbidden:
+        return await ctx.send("❌ Permission refusée. Vérifie que le bot a le droit `Bannir des membres`.", delete_after=8)
+    except discord.HTTPException as ex:
+        return await ctx.send(f"❌ Erreur Discord : `{ex}`", delete_after=8)
     e = await log_sanction(ctx.guild, member, "Ban", reason, ctx.author)
     await ctx.send(embed=e)
 
