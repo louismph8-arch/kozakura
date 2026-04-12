@@ -10,7 +10,7 @@ python bot.py
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-import json, os, re, time, asyncio, aiohttp
+import json, os, re, time, asyncio, aiohttp, random, sys
 from datetime import datetime, timedelta
 from collections import defaultdict
 
@@ -8060,123 +8060,6 @@ class GiveawayView(discord.ui.View):
             f"🎉 Tu participes ! **{len(participants)}** participant(s) au total.", ephemeral=True)
 
 
-@bot.command()
-@commands.has_permissions(manage_guild=True)
-async def giveaway(ctx, duration: str = "1h", *, prize: str = "Surprise"):
-    """!giveaway [durée: ex 30m / 2h / 1j] [lot] — Lance un giveaway"""
-    units = {"s": 1, "m": 60, "h": 3600, "j": 86400}
-    unit  = duration[-1].lower()
-    try:
-        secs = int(duration[:-1]) * units.get(unit, 60)
-    except ValueError:
-        return await ctx.send("❌ Format : `!giveaway 2h Prix incroyable`", delete_after=5)
-    end_time = datetime.utcnow() + timedelta(seconds=secs)
-    gid = str(ctx.guild.id)
-
-    e = discord.Embed(
-        title=f"🎉  GIVEAWAY — {prize}",
-        description=(
-            f"Clique sur **Participer** pour tenter ta chance !\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"⏰ **Fin :** <t:{int(end_time.timestamp())}:R>\n"
-            f"🏆 **Lot :** {prize}\n"
-            f"👤 **Organisateur :** {ctx.author.mention}"
-        ),
-        color=0xFFD700,
-        timestamp=end_time
-    )
-    e.set_footer(text=f"Fin le  •  Kozakura Giveaway")
-    msg = await ctx.send(embed=e, view=GiveawayView())
-    giveaway_db.setdefault(gid, {})[str(msg.id)] = {
-        "prize":        prize,
-        "end_time":     end_time.isoformat(),
-        "channel_id":   ctx.channel.id,
-        "host_id":      ctx.author.id,
-        "participants": [],
-        "ended":        False,
-    }
-    save_json("giveaways.json", giveaway_db)
-    # Supprimer le message de commande
-    try: await ctx.message.delete()
-    except Exception: pass
-
-
-@bot.command(name="gend")
-@commands.has_permissions(manage_guild=True)
-async def giveaway_end(ctx, message_id: int):
-    """!gend [message_id] — Termine un giveaway manuellement"""
-    gid = str(ctx.guild.id); mid = str(message_id)
-    gw  = giveaway_db.get(gid, {}).get(mid)
-    if not gw:
-        return await ctx.send("❌ Giveaway introuvable.", delete_after=5)
-    await _end_giveaway(ctx.guild, mid, gw)
-
-
-async def _end_giveaway(guild, mid: str, gw: dict):
-    gid = str(guild.id)
-    if gw.get("ended"): return
-    gw["ended"] = True
-    save_json("giveaways.json", giveaway_db)
-    ch = guild.get_channel(gw["channel_id"])
-    if not ch: return
-    participants = gw.get("participants", [])
-    prize = gw.get("prize", "Surprise")
-    if not participants:
-        e = discord.Embed(title="🎉 Giveaway Terminé", description="Aucun participant 😔", color=discord.Color.red())
-        try:
-            msg = await ch.fetch_message(int(mid))
-            await msg.edit(embed=e, view=None)
-        except Exception: pass
-        return
-    import random
-    winner_id = random.choice(participants)
-    winner    = guild.get_member(int(winner_id))
-    e = discord.Embed(
-        title="🎉  Giveaway Terminé !",
-        description=(
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🏆 **Gagnant :** {winner.mention if winner else f'<@{winner_id}>'}\n"
-            f"🎁 **Lot :** {prize}\n"
-            f"👥 **Participants :** {len(participants)}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        ),
-        color=0xFFD700, timestamp=datetime.utcnow()
-    )
-    e.set_footer(text="Kozakura Giveaway")
-    try:
-        msg = await ch.fetch_message(int(mid))
-        await msg.edit(embed=e, view=None)
-    except Exception: pass
-    await ch.send(f"🎊 Félicitations {winner.mention if winner else f'<@{winner_id}>'} ! Tu gagnes **{prize}** !")
-    if winner:
-        try:
-            dm_e = discord.Embed(
-                title="🎉 Tu as gagné un giveaway !",
-                description=f"**Serveur :** {guild.name}\n**Lot :** {prize}\n\nFélicitations ! 🥳",
-                color=0xFFD700)
-            await winner.send(embed=dm_e)
-        except Exception: pass
-
-
-@tasks.loop(minutes=1)
-async def check_giveaways():
-    now = datetime.utcnow()
-    for gid, gws in list(giveaway_db.items()):
-        guild = discord.utils.get(bot.guilds, id=int(gid))
-        if not guild: continue
-        for mid, gw in list(gws.items()):
-            if gw.get("ended"): continue
-            end_time = datetime.fromisoformat(gw["end_time"])
-            if now >= end_time:
-                await _end_giveaway(guild, mid, gw)
-
-
-@bot.listen("on_ready")
-async def start_giveaway_checker():
-    if not check_giveaways.is_running():
-        check_giveaways.start()
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # ⭐ STARBOARD CONFIG
 # ══════════════════════════════════════════════════════════════════════════════
@@ -8247,10 +8130,10 @@ async def birthday(ctx, date: str = None):
     await ctx.send(f"🎂 Anniversaire enregistré : **{date}** !", delete_after=8)
 
 
-@bot.command()
+@bot.command(name="setbirthdaychannel")
 @commands.has_permissions(administrator=True)
-async def setbirthday(ctx, channel_arg: str):
-    """!setbirthday #salon — Salon des annonces d'anniversaires"""
+async def setbirthdaychannel(ctx, channel_arg: str):
+    """!setbirthdaychannel #salon — Salon des annonces d'anniversaires"""
     channel = await resolve_channel(ctx, channel_arg)
     if not channel: return await ctx.send("❌ Salon introuvable.")
     set_cfg(ctx.guild.id, "birthday_channel", channel.id)
