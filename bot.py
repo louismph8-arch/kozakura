@@ -1261,12 +1261,21 @@ async def on_message_delete(message):
 @bot.event
 async def on_message_edit(before, after):
     if before.author.bot or before.content == after.content: return
-    e = discord.Embed(title="✏️ Message Modifié",
-        description=f"Par {before.author.mention} dans {before.channel.mention}",
-        color=discord.Color.blue(), timestamp=datetime.utcnow())
-    e.add_field(name="Avant", value=before.content[:500] or "*(vide)*", inline=False)
-    e.add_field(name="Après", value=after.content[:500] or "*(vide)*", inline=False)
+    e = discord.Embed(
+        title="✏️  Message Modifié",
+        description=(
+            f"**Auteur :** {before.author.mention}\n"
+            f"**Salon :** {before.channel.mention}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=discord.Color.from_rgb(88, 101, 242),
+        timestamp=datetime.utcnow()
+    )
+    e.add_field(name="📝 Avant", value=before.content[:500] or "*(vide)*", inline=False)
+    e.add_field(name="✅ Après", value=after.content[:500] or "*(vide)*", inline=False)
+    e.add_field(name="🔗 Lien", value=f"[Aller au message]({after.jump_url})", inline=True)
     e.set_thumbnail(url=before.author.display_avatar.url)
+    e.set_footer(text=f"ID : {before.author.id}  •  #{before.channel.name}")
     await log_message(before.guild, e)
 
 
@@ -1368,23 +1377,58 @@ async def unban(ctx, user_id: int, *, reason="Aucune raison"):
     await ctx.send(embed=e)
 
 @bot.command()
-async def kick(ctx, member: discord.Member, *, reason="Aucune raison"):
+async def kick(ctx, member: discord.Member = None, *, reason="Aucune raison"):
+    if member is None:
+        return await ctx.send("❌ Mentionne un membre : `!kick @membre [raison]`", delete_after=5)
     if not has_sanction_role(ctx.author, ROLES_KICK):
         return await ctx.send("❌ Tu n'as pas la permission d'expulser.", delete_after=5)
-    await dm(member, "👟 Tu as été expulsé", f"**Serveur :** {ctx.guild.name}\n**Raison :** {reason}")
-    await member.kick(reason=reason)
+    if member.top_role >= ctx.guild.me.top_role:
+        return await ctx.send("❌ Je ne peux pas expulser ce membre (hiérarchie des rôles).", delete_after=5)
+    dm_e = discord.Embed(
+        title="👟  Tu as été expulsé",
+        description=(
+            f"**Serveur :** {ctx.guild.name}\n"
+            f"**Raison :** {reason}\n\n"
+            "Si tu penses que c'est une erreur, contacte un administrateur."
+        ),
+        color=discord.Color.from_rgb(255, 149, 0)
+    )
+    dm_e.set_footer(text=f"Kozakura  •  {ctx.guild.name}")
+    try:
+        await member.send(embed=dm_e)
+    except Exception: pass
+    try:
+        await member.kick(reason=reason)
+    except discord.Forbidden:
+        return await ctx.send("❌ Permission refusée.", delete_after=5)
     e = await log_sanction(ctx.guild, member, "Kick", reason, ctx.author)
     await ctx.send(embed=e)
 
 @bot.command()
-async def mute(ctx, member: discord.Member, duration: int = 10, *, reason="Aucune raison"):
+async def mute(ctx, member: discord.Member = None, duration: int = 10, *, reason="Aucune raison"):
+    if member is None:
+        return await ctx.send("❌ Mentionne un membre : `!mute @membre [minutes] [raison]`", delete_after=5)
     if not has_sanction_role(ctx.author, ROLES_MUTE):
         return await ctx.send("❌ Tu n'as pas la permission de mute.", delete_after=5)
     until = discord.utils.utcnow() + timedelta(minutes=duration)
-    await member.timeout(until, reason=reason)
-    await dm(member, "🔇 Tu as été rendu muet",
-        f"**Serveur :** {ctx.guild.name}\n**Durée :** {duration} min\n**Raison :** {reason}\n\nTu seras automatiquement démuté après.",
-        color=discord.Color.greyple())
+    try:
+        await member.timeout(until, reason=reason)
+    except discord.Forbidden:
+        return await ctx.send("❌ Permission refusée.", delete_after=5)
+    dm_e = discord.Embed(
+        title="🔇  Tu as été mis en sourdine",
+        description=(
+            f"**Serveur :** {ctx.guild.name}\n"
+            f"**Durée :** {duration} minute(s)\n"
+            f"**Raison :** {reason}\n\n"
+            f"Tu seras automatiquement démuté dans **{duration} min**."
+        ),
+        color=discord.Color.from_rgb(114, 118, 125)
+    )
+    dm_e.set_footer(text=f"Kozakura  •  {ctx.guild.name}")
+    try:
+        await member.send(embed=dm_e)
+    except Exception: pass
     e = await log_sanction(ctx.guild, member, "Mute", reason, ctx.author, extra=f"Durée : {duration} min")
     await ctx.send(embed=e)
 
@@ -1481,7 +1525,9 @@ async def slowmode(ctx, seconds: int):
 
 # ─── AVERTISSEMENTS ───────────────────────────────────────────────────────────
 @bot.command()
-async def warn(ctx, member: discord.Member, *, reason="Aucune raison"):
+async def warn(ctx, member: discord.Member = None, *, reason="Aucune raison"):
+    if member is None:
+        return await ctx.send("❌ Mentionne un membre : `!warn @membre [raison]`", delete_after=5)
     if not has_sanction_role(ctx.author, ROLES_WARN):
         return await ctx.send("❌ Tu n'as pas la permission d'avertir.", delete_after=5)
     gid = str(ctx.guild.id); uid = str(member.id)
@@ -1489,21 +1535,64 @@ async def warn(ctx, member: discord.Member, *, reason="Aucune raison"):
         {"reason": reason, "by": str(ctx.author.id), "date": str(datetime.utcnow())})
     save_json("warnings.json", warnings_db)
     count = len(warnings_db[gid][uid])
+    WARN_COLORS = {1: 0xFFD700, 2: 0xFF9500, 3: 0xFF4444}
+    color = WARN_COLORS.get(count, 0xFF0000)
+    dm_e = discord.Embed(
+        title=f"⚠️  Avertissement n°{count}",
+        description=(
+            f"**Serveur :** {ctx.guild.name}\n"
+            f"**Raison :** {reason}\n\n"
+            f"{'⛔ Attention : tu accumules des avertissements, une sanction peut suivre.' if count >= 3 else ''}"
+        ),
+        color=color
+    )
+    dm_e.set_footer(text=f"Kozakura  •  {ctx.guild.name}")
+    try:
+        await member.send(embed=dm_e)
+    except Exception: pass
     e = await log_sanction(ctx.guild, member, "Warn", reason, ctx.author, extra=f"Avertissement n°{count}")
     await ctx.send(embed=e)
-    await dm(member, f"⚠️ Avertissement ({count})",
-        f"**Serveur :** {ctx.guild.name}\n**Raison :** {reason}")
     if count >= 3:
-        await ctx.send(f"⚠️ {member.mention} a **{count} avertissements** — sanction recommandée.")
+        alert = discord.Embed(
+            title="⛔  Avertissements multiples",
+            description=f"{member.mention} cumule **{count} avertissements** — une sanction est recommandée.",
+            color=0xFF0000, timestamp=datetime.utcnow()
+        )
+        alert.set_thumbnail(url=member.display_avatar.url)
+        await ctx.send(embed=alert)
 
 @bot.command()
 async def warnings(ctx, member: discord.Member = None):
     member = member or ctx.author
-    data = warnings_db.get(str(ctx.guild.id), {}).get(str(member.id), [])
-    e = discord.Embed(title=f"⚠️ Avertissements de {member.name}",
-        description=f"Total : **{len(data)}**", color=discord.Color.yellow())
-    for i, w in enumerate(data[-5:], 1):
-        e.add_field(name=f"#{i} — {w['date'][:10]}", value=w['reason'], inline=False)
+    gid    = str(ctx.guild.id); uid = str(member.id)
+    data   = warnings_db.get(gid, {}).get(uid, [])
+    count  = len(data)
+    WARN_COLORS = {0: 0x57F287, 1: 0xFFD700, 2: 0xFF9500}
+    color  = WARN_COLORS.get(count, 0xFF4444)
+    e = discord.Embed(
+        title=f"⚠️  Avertissements — {member.display_name}",
+        description=(
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"**Total :** `{count}` avertissement(s)\n"
+            f"{'⛔ Sanction recommandée' if count >= 3 else '✅ Historique propre' if count == 0 else ''}"
+        ),
+        color=color,
+        timestamp=datetime.utcnow()
+    )
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.set_author(name=f"{member}", icon_url=member.display_avatar.url)
+    if not data:
+        e.add_field(name="📋 Historique", value="Aucun avertissement ✅", inline=False)
+    else:
+        for i, w in enumerate(data[-5:], 1):
+            by = ctx.guild.get_member(int(w.get("by", 0)))
+            by_str = by.display_name if by else "Inconnu"
+            e.add_field(
+                name=f"⚠️ Warn #{i}  •  {w['date'][:10]}",
+                value=f"**Raison :** {w['reason'][:100]}\n**Par :** {by_str}",
+                inline=False
+            )
+    e.set_footer(text=f"Kozakura  •  {ctx.guild.name}")
     await ctx.send(embed=e)
 
 @bot.command()
@@ -1719,26 +1808,91 @@ async def bvn(ctx, member: discord.Member = None):
 
 # ─── SUGGESTIONS / SONDAGES ───────────────────────────────────────────────────
 @bot.command()
+class SuggestionView(discord.ui.View):
+    def __init__(self): super().__init__(timeout=None)
+
+    @discord.ui.button(label="Approuver", emoji="✅", style=discord.ButtonStyle.green, custom_id="sug_approve")
+    async def approve(self, interaction: discord.Interaction, btn: discord.ui.Button):
+        if not has_sanction_role(interaction.user, ROLES_MUTE):
+            return await interaction.response.send_message("❌ Réservé au staff.", ephemeral=True)
+        e = interaction.message.embeds[0]
+        new_e = discord.Embed(
+            title="✅  Suggestion Approuvée",
+            description=e.description,
+            color=0x57F287,
+            timestamp=datetime.utcnow()
+        )
+        for field in e.fields:
+            new_e.add_field(name=field.name, value=field.value, inline=field.inline)
+        new_e.add_field(name="✅ Décision", value=f"Approuvée par {interaction.user.mention}", inline=False)
+        new_e.set_footer(text=e.footer.text if e.footer else "")
+        await interaction.message.edit(embed=new_e, view=None)
+        await interaction.response.send_message("✅ Suggestion approuvée.", ephemeral=True)
+
+    @discord.ui.button(label="Refuser", emoji="❌", style=discord.ButtonStyle.red, custom_id="sug_deny")
+    async def deny(self, interaction: discord.Interaction, btn: discord.ui.Button):
+        if not has_sanction_role(interaction.user, ROLES_MUTE):
+            return await interaction.response.send_message("❌ Réservé au staff.", ephemeral=True)
+        e = interaction.message.embeds[0]
+        new_e = discord.Embed(
+            title="❌  Suggestion Refusée",
+            description=e.description,
+            color=0xED4245,
+            timestamp=datetime.utcnow()
+        )
+        for field in e.fields:
+            new_e.add_field(name=field.name, value=field.value, inline=field.inline)
+        new_e.add_field(name="❌ Décision", value=f"Refusée par {interaction.user.mention}", inline=False)
+        new_e.set_footer(text=e.footer.text if e.footer else "")
+        await interaction.message.edit(embed=new_e, view=None)
+        await interaction.response.send_message("❌ Suggestion refusée.", ephemeral=True)
+
+
 async def suggest(ctx, *, suggestion):
     ch_id = get_cfg(ctx.guild.id, "suggestion_channel")
-    ch = ctx.guild.get_channel(int(ch_id)) if ch_id else ctx.channel
-    e = discord.Embed(title="💡 Suggestion", description=suggestion,
-        color=discord.Color.blue(), timestamp=datetime.utcnow())
-    e.set_footer(text=f"Par {ctx.author.name}")
-    msg = await ch.send(embed=e)
+    ch    = ctx.guild.get_channel(int(ch_id)) if ch_id else ctx.channel
+    e = discord.Embed(
+        title="💡  Nouvelle Suggestion",
+        description=f"{suggestion}",
+        color=0x5865F2,
+        timestamp=datetime.utcnow()
+    )
+    e.set_author(name=ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
+    e.add_field(name="👤 Auteur", value=ctx.author.mention, inline=True)
+    e.add_field(name="📅 Date",   value=datetime.utcnow().strftime("%d/%m/%Y"), inline=True)
+    e.set_footer(text=f"Kozakura  •  {ctx.guild.name}")
+    msg = await ch.send(embed=e, view=SuggestionView())
     await msg.add_reaction("✅"); await msg.add_reaction("❌")
-    if ch != ctx.channel: await ctx.send("✅ Suggestion envoyée !", delete_after=5)
+    if ch != ctx.channel:
+        await ctx.send("✅ Suggestion envoyée !", delete_after=5)
+    try: await ctx.message.delete()
+    except Exception: pass
 
 @bot.command()
 async def poll(ctx, question, *options):
-    if len(options) < 2: return await ctx.send("❌ Minimum 2 options.")
+    if len(options) < 2:
+        return await ctx.send("❌ Minimum 2 options. Ex: `!poll \"Question\" \"Option 1\" \"Option 2\"`")
     emojis = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
-    desc = "\n".join(f"{emojis[i]} {opt}" for i, opt in enumerate(options[:10]))
-    e = discord.Embed(title=f"📊 {question}", description=desc,
-        color=discord.Color.blurple(), timestamp=datetime.utcnow())
-    e.set_footer(text=f"Sondage par {ctx.author.name}")
+    opts   = options[:10]
+    lines  = "\n".join(f"{emojis[i]}  {opt}" for i, opt in enumerate(opts))
+    e = discord.Embed(
+        title=f"📊  {question}",
+        description=(
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{lines}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Réagis avec le numéro de ton choix !"
+        ),
+        color=0x5865F2,
+        timestamp=datetime.utcnow()
+    )
+    e.set_author(name=f"Sondage par {ctx.author.display_name}", icon_url=ctx.author.display_avatar.url)
+    e.set_footer(text=f"Kozakura  •  {ctx.guild.name}  •  {len(opts)} option(s)")
     msg = await ctx.send(embed=e)
-    for i in range(len(options[:10])): await msg.add_reaction(emojis[i])
+    for i in range(len(opts)):
+        await msg.add_reaction(emojis[i])
+    try: await ctx.message.delete()
+    except Exception: pass
 
 # ─── RAPPELS ──────────────────────────────────────────────────────────────────
 @bot.command()
@@ -1770,20 +1924,38 @@ async def check_reminders():
 # ─── STATS ────────────────────────────────────────────────────────────────────
 @bot.command()
 async def stats(ctx):
-    g = ctx.guild
-    bots = sum(1 for m in g.members if m.bot)
-    online = sum(1 for m in g.members if m.status != discord.Status.offline and not m.bot)
-    vocal = sum(len(vc.members) for vc in g.voice_channels)
-    e = discord.Embed(title=f"📊 Stats de {g.name}", color=discord.Color.blurple(),
-        timestamp=datetime.utcnow())
-    if g.icon: e.set_thumbnail(url=g.icon.url)
-    e.add_field(name="👥 Membres", value=g.member_count - bots)
-    e.add_field(name="🤖 Bots", value=bots)
-    e.add_field(name="🟢 En ligne", value=online)
-    e.add_field(name="🎙️ En vocal", value=vocal)
-    e.add_field(name="📅 Créé le", value=g.created_at.strftime("%d/%m/%Y"))
+    g       = ctx.guild
+    bots    = sum(1 for m in g.members if m.bot)
+    humans  = g.member_count - bots
+    online  = sum(1 for m in g.members if m.status != discord.Status.offline and not m.bot)
+    vocal   = sum(len(vc.members) for vc in g.voice_channels)
+    boosts  = g.premium_subscription_count or 0
+    tier    = g.premium_tier
+    text_ch = len(g.text_channels)
+    voice_ch= len(g.voice_channels)
+    roles   = len(g.roles) - 1
+    age     = (datetime.utcnow() - g.created_at.replace(tzinfo=None)).days
+    e = discord.Embed(
+        title=f"📊  Statistiques — {g.name}",
+        description=f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        color=0xFF89B4,
+        timestamp=datetime.utcnow()
+    )
+    if g.icon:   e.set_thumbnail(url=g.icon.url)
+    if g.banner: e.set_image(url=g.banner.url)
+    e.set_author(name=g.name, icon_url=g.icon.url if g.icon else discord.Embed.Empty)
+    e.add_field(name="👥 Membres",    value=f"`{humans}`",         inline=True)
+    e.add_field(name="🟢 En ligne",   value=f"`{online}`",         inline=True)
+    e.add_field(name="🤖 Bots",       value=f"`{bots}`",           inline=True)
+    e.add_field(name="🎙️ En vocal",   value=f"`{vocal}`",          inline=True)
+    e.add_field(name="💬 Salons text",value=f"`{text_ch}`",        inline=True)
+    e.add_field(name="🔊 Salons voix",value=f"`{voice_ch}`",       inline=True)
+    e.add_field(name="🎭 Rôles",      value=f"`{roles}`",          inline=True)
+    e.add_field(name="💎 Boosts",     value=f"`{boosts}` (Niv. {tier})", inline=True)
+    e.add_field(name="📅 Âge",        value=f"`{age}` jours",      inline=True)
     inv = get_cfg(g.id, "invite_link")
     if inv: e.add_field(name="🔗 Invitation", value=inv, inline=False)
+    e.set_footer(text=f"Kozakura  •  ID : {g.id}")
     await ctx.send(embed=e)
 
 # ─── COMMANDES PERSONNALISÉES ─────────────────────────────────────────────────
@@ -3462,13 +3634,15 @@ async def on_voice_state_update(member, before, after):
     if before.channel is None and after.channel is not None:
         voice_join_times[uid] = time.time()
         await refresh_vocal_counter(member.guild)
-        # Log vocal
         e = discord.Embed(
-            title="🎙️ Rejoint le vocal",
-            description=f"{member.mention} a rejoint **{after.channel.name}**",
-            color=discord.Color.green(), timestamp=datetime.utcnow()
+            description=(
+                f"🎙️ **{member.display_name}** a rejoint **{after.channel.name}**"
+            ),
+            color=0x57F287,
+            timestamp=datetime.utcnow()
         )
-        e.set_thumbnail(url=member.display_avatar.url)
+        e.set_author(name=str(member), icon_url=member.display_avatar.url)
+        e.set_footer(text=f"#{after.channel.name}  •  {member.guild.name}")
         await log_vocal(member.guild, e)
 
     # Quitte un salon vocal
@@ -3494,17 +3668,25 @@ async def on_voice_state_update(member, before, after):
 
                 # Level up ?
                 if new_level > old_level:
-                    guild = member.guild
+                    guild    = member.guild
+                    SAKURA_PINK = 0xFF89B4
+                    next_xp  = xp_for_level(new_level + 1)
                     e = discord.Embed(
-                        title="🎉 Level Up! (Vocal)",
-                        description=f"{member.mention} passe au **niveau {new_level}** grâce au vocal ! 🎙️",
-                        color=discord.Color.gold(),
+                        title="⭐  Level Up ! (Vocal)",
+                        description=(
+                            f"## {member.mention}\n"
+                            f"Félicitations, tu passes au **niveau {new_level}** grâce au vocal ! 🎙️\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                        ),
+                        color=SAKURA_PINK,
                         timestamp=datetime.utcnow()
                     )
                     e.set_thumbnail(url=member.display_avatar.url)
-                    e.add_field(name="🎙️ Temps vocal", value=f"{elapsed_minutes} min")
-                    e.add_field(name="✨ XP gagné",    value=f"+{xp_gained} XP")
-
+                    e.add_field(name="🏅 Niveau",      value=f"`{new_level}`",         inline=True)
+                    e.add_field(name="🎙️ Session",     value=f"`{elapsed_minutes}` min",inline=True)
+                    e.add_field(name="✨ XP gagné",    value=f"`+{xp_gained}` XP",     inline=True)
+                    e.add_field(name="🎯 Prochain niveau", value=f"`{next_xp}` XP",    inline=True)
+                    e.set_footer(text=f"Kozakura XP  •  {guild.name}")
                     level_ch = discord.utils.find(
                         lambda c: "niveaux" in c.name.lower() or "niveau" in c.name.lower(),
                         guild.text_channels)
@@ -3521,14 +3703,17 @@ async def on_voice_state_update(member, before, after):
 
         await refresh_vocal_counter(member.guild)
         # Log vocal départ
+        elapsed_display = f"{elapsed_minutes} min" if elapsed_minutes > 0 else "< 1 min"
         e_voc = discord.Embed(
-            title="🔇 Quitté le vocal",
-            description=f"{member.mention} a quitté **{before.channel.name}**",
-            color=discord.Color.red(), timestamp=datetime.utcnow()
+            description=(
+                f"🔇 **{member.display_name}** a quitté **{before.channel.name}**\n"
+                f"⏱️ Temps passé : `{elapsed_display}`"
+            ),
+            color=0xED4245,
+            timestamp=datetime.utcnow()
         )
-        e_voc.set_thumbnail(url=member.display_avatar.url)
-        if uid in voice_join_times or True:
-            elapsed_total = int((time.time() - voice_join_times.get(uid, time.time())) / 60) if uid not in voice_join_times else 0
+        e_voc.set_author(name=str(member), icon_url=member.display_avatar.url)
+        e_voc.set_footer(text=f"#{before.channel.name}  •  {member.guild.name}")
         await log_vocal(member.guild, e_voc)
 
     # Changement de salon vocal
