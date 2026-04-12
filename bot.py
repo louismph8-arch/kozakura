@@ -8406,21 +8406,23 @@ async def streak(ctx, member: discord.Member = None):
     """!streak [@membre] — Affiche le streak quotidien"""
     member = member or ctx.author
     gid = str(ctx.guild.id); uid = str(member.id)
-    s_data = streaks_db.get(gid, {}).get(uid, {"streak": 0, "last_date": ""})
+    s_data     = streaks_db.get(gid, {}).get(uid, {})
     streak_val = s_data.get("streak", 0)
-    last = s_data.get("last_date", "?")
+    last       = s_data.get("last_date") or "Jamais"
+    bonus      = STREAK_BONUS_XP if streak_val > 0 else 0
     e = discord.Embed(
         description=(
             f"## 🔥  Streak de {member.display_name}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"**{streak_val}** jour(s) consécutifs\n"
-            f"Bonus XP par message : `+{streak_val > 0 and STREAK_BONUS_XP or 0}` XP"
+            f"Bonus XP actif : `+{bonus}` XP par message"
         ),
         color=0xFF6B35,
         timestamp=datetime.utcnow()
     )
     e.set_thumbnail(url=member.display_avatar.url)
-    e.add_field(name="📅 Dernier message", value=last[:10] if last != "?" else "?", inline=True)
+    e.add_field(name="📅 Dernier message", value=last[:10] if last != "Jamais" else "Jamais", inline=True)
+    e.add_field(name="🎯 Bonus XP",        value=f"`+{bonus}` XP",                            inline=True)
     e.set_footer(text=f"Kozakura XP  •  {ctx.guild.name}")
     await ctx.send(embed=e)
 
