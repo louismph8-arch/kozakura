@@ -393,6 +393,12 @@ async def on_ready():
         synced = await bot.tree.sync()
         print(f"⚡ {len(synced)} slash commands synchronisées")
     except Exception as e: print(e)
+    # Repopuler voice_join_times pour les membres déjà en vocal au redémarrage
+    for guild in bot.guilds:
+        for vc in guild.voice_channels:
+            for m in vc.members:
+                if not m.bot:
+                    voice_join_times[str(m.id)] = time.time()
 
 @bot.event
 async def on_member_join(member):
@@ -1135,27 +1141,56 @@ async def on_message(message):
 async def on_message_delete(message):
     if message.author.bot: return
 
+    # Cherche qui a supprimé dans l'audit log
+    deleter = None
+    try:
+        await asyncio.sleep(0.5)
+        async for entry in message.guild.audit_logs(limit=5, action=discord.AuditLogAction.message_delete):
+            if (entry.target.id == message.author.id
+                    and (datetime.utcnow() - entry.created_at.replace(tzinfo=None)).total_seconds() < 8):
+                deleter = entry.user
+                break
+    except Exception:
+        pass
+
+    deleted_by = f"🗑️ Supprimé par **{deleter.mention}**" if deleter and deleter != message.author else "🗑️ Auto-supprimé par l'auteur"
+
     # Log photos/fichiers séparé
     if message.attachments:
         for att in message.attachments:
             e_photo = discord.Embed(
-                title="🖼️ Fichier Supprimé",
-                description=f"Par {message.author.mention} dans {message.channel.mention}",
-                color=discord.Color.orange(), timestamp=datetime.utcnow()
+                title="🖼️  Fichier Supprimé",
+                description=(
+                    f"**Auteur :** {message.author.mention}\n"
+                    f"**Salon :** {message.channel.mention}\n"
+                    f"{deleted_by}"
+                ),
+                color=discord.Color.from_rgb(255, 149, 0),
+                timestamp=datetime.utcnow()
             )
-            e_photo.add_field(name="Fichier", value=att.filename)
-            e_photo.add_field(name="URL", value=att.url[:200] if att.url else "N/A")
+            e_photo.add_field(name="📎 Fichier", value=f"`{att.filename}`", inline=True)
             if att.content_type and att.content_type.startswith("image"):
                 e_photo.set_image(url=att.proxy_url)
+            e_photo.set_thumbnail(url=message.author.display_avatar.url)
+            e_photo.set_footer(text=f"ID auteur : {message.author.id}")
             await log_photo(message.guild, e_photo)
 
     # Log message supprimé
     if message.content:
-        e = discord.Embed(title="🗑️ Message Supprimé",
-            description=f"Par {message.author.mention} dans {message.channel.mention}",
-            color=discord.Color.red(), timestamp=datetime.utcnow())
-        e.add_field(name="Contenu", value=message.content[:1000] or "*(vide)*")
+        e = discord.Embed(
+            title="🗑️  Message Supprimé",
+            description=(
+                f"**Auteur :** {message.author.mention}\n"
+                f"**Salon :** {message.channel.mention}\n"
+                f"{deleted_by}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"{message.content[:900]}"
+            ),
+            color=discord.Color.from_rgb(237, 66, 69),
+            timestamp=datetime.utcnow()
+        )
         e.set_thumbnail(url=message.author.display_avatar.url)
+        e.set_footer(text=f"ID auteur : {message.author.id}  •  #{message.channel.name}")
         await log_message(message.guild, e)
 
 @bot.event
@@ -1486,21 +1521,60 @@ async def clearsanctions(ctx, member: discord.Member):
 async def rank(ctx, member: discord.Member = None):
     member = member or ctx.author
     gid = str(ctx.guild.id); uid = str(member.id)
-    xp = xp_db.get(gid, {}).get(uid, 0); lvl = get_level(xp)
-    e = discord.Embed(title=f"🏆 Rang de {member.name}", color=discord.Color.gold())
-    e.add_field(name="Niveau", value=lvl)
-    e.add_field(name="XP", value=f"{xp} / {xp_for_level(lvl+1)}")
+    gid_data  = xp_db.get(gid, {})
+    xp        = gid_data.get(uid, 0)
+    lvl       = get_level(xp)
+    next_xp   = xp_for_level(lvl + 1)
+    prev_xp   = xp_for_level(lvl)
+    progress  = (xp - prev_xp) / max(next_xp - prev_xp, 1)
+    bar_fill  = int(progress * 14)
+    bar       = "█" * bar_fill + "░" * (14 - bar_fill)
+    sorted_lb = sorted(gid_data.items(), key=lambda x: x[1], reverse=True)
+    rank_pos  = next((i + 1 for i, (u, _) in enumerate(sorted_lb) if u == uid), "?")
+
+    SAKURA_PINK = 0xFF89B4
+    e = discord.Embed(
+        description=(
+            f"## ⭐  Niveau {lvl}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"`{bar}` **{int(progress*100)}%**\n"
+            f"**{xp}** XP  ›  prochain niveau à **{next_xp}** XP"
+        ),
+        color=SAKURA_PINK,
+        timestamp=datetime.utcnow()
+    )
+    e.set_author(name=f"{member.display_name}  •  Rang #{rank_pos}", icon_url=member.display_avatar.url)
     e.set_thumbnail(url=member.display_avatar.url)
+    e.add_field(name="🏅 Niveau",    value=f"`{lvl}`",          inline=True)
+    e.add_field(name="✨ XP total",  value=f"`{xp}`",           inline=True)
+    e.add_field(name="🏆 Classement", value=f"`#{rank_pos}`",   inline=True)
+    e.set_footer(text=f"Kozakura XP  •  {ctx.guild.name}", icon_url=ctx.guild.me.display_avatar.url)
     await ctx.send(embed=e)
 
 @bot.command()
 async def leaderboard(ctx):
-    gid = str(ctx.guild.id)
-    top = sorted(xp_db.get(gid, {}).items(), key=lambda x: x[1], reverse=True)[:10]
-    e = discord.Embed(title="🏆 Leaderboard XP", color=discord.Color.gold())
-    for i, (uid, xp) in enumerate(top, 1):
-        m = ctx.guild.get_member(int(uid))
-        e.add_field(name=f"#{i} {m.name if m else uid}", value=f"Niv.{get_level(xp)} | {xp} XP", inline=False)
+    gid  = str(ctx.guild.id)
+    top  = sorted(xp_db.get(gid, {}).items(), key=lambda x: x[1], reverse=True)[:10]
+    SAKURA_PINK = 0xFF89B4
+    medals = ["🥇", "🥈", "🥉"] + ["🏅"] * 7
+    e = discord.Embed(
+        title="🏆  Classement XP — Kozakura",
+        color=SAKURA_PINK,
+        timestamp=datetime.utcnow()
+    )
+    if ctx.guild.icon:
+        e.set_thumbnail(url=ctx.guild.icon.url)
+    if not top:
+        e.description = "Aucune donnée XP enregistrée."
+    else:
+        lines = []
+        for i, (uid, xp) in enumerate(top):
+            m   = ctx.guild.get_member(int(uid))
+            lvl = get_level(xp)
+            name = m.display_name if m else f"*{uid}*"
+            lines.append(f"{medals[i]} **{name}** — Niv. `{lvl}`  •  `{xp}` XP")
+        e.description = "\n".join(lines)
+    e.set_footer(text=f"Kozakura XP  •  {ctx.guild.name}")
     await ctx.send(embed=e)
 
 # ─── BIENVENUE MANUELLE ────────────────────────────────────────────────────────
@@ -2657,9 +2731,14 @@ async def sl_panel(i: discord.Interaction):
     await i.response.send_message(embed=e, view=AdminPanel(), ephemeral=True)
 
 # ─── AIDE ─────────────────────────────────────────────────────────────────────
+ROLES_HELP = ("B#tch", "Univers", "Queen", "Baby admin", "Développer",
+              "[+] Kozakura gestion", "Gestion", "Support")
+
 @bot.command()
 async def help(ctx, categorie: str = None):
-    """!help [catégorie] — Affiche l'aide complète ou d'une catégorie"""
+    """!help [catégorie] — Affiche l'aide complète ou d'une catégorie (staff uniquement)"""
+    if not has_sanction_role(ctx.author, ROLES_HELP):
+        return await ctx.message.delete() if ctx.guild else None
 
     categories = {
         "mod":        "🔨 Modération",
@@ -3434,162 +3513,147 @@ def get_trophee_badges(votes, voice_minutes, booster):
 
     return badges if badges else ["🌱 Débutant"]
 
+def _progress_bar(current, target, prev=0, width=12):
+    total = max(target - prev, 1)
+    filled = min(int((current - prev) / total * width), width)
+    return "█" * filled + "░" * (width - filled)
+
 @bot.command()
 async def trophe(ctx, member: discord.Member = None):
-    """!trophe [@membre] — Affiche le trophée d'un membre dans le salon trophées"""
+    """!trophe [@membre] — Affiche le trophée d'un membre"""
     member = member or ctx.author
     guild  = ctx.guild
     gid    = str(guild.id)
     uid    = str(member.id)
+    ch_id  = get_cfg(guild.id, "trophees_channel")
 
-    # Vérifier le salon trophées
-    ch_id = get_cfg(guild.id, "trophees_channel")
+    data        = trophees_db.get(gid, {}).get(uid, {})
+    votes       = data.get("votes", 0)
+    voice_min   = data.get("voice_minutes", 0)
+    voice_h     = voice_min // 60
+    voice_m     = voice_min % 60
+    booster     = member.premium_since is not None
 
-    # Récupérer les données
-    data         = trophees_db.get(gid, {}).get(uid, {})
-    votes        = data.get("votes", 0)
-    voice_min    = data.get("voice_minutes", 0)
-    voice_hours  = voice_min // 60
-    voice_rest   = voice_min % 60
+    # XP
+    xp_data = xp_db.get(gid, {})
+    xp      = xp_data.get(uid, 0)
+    lvl     = get_level(xp)
 
-    # Stats serveur en temps réel
-    boosts       = guild.premium_subscription_count or 0
-    booster      = member.premium_since is not None
-    in_voice     = sum(1 for vc in guild.voice_channels for m in vc.members if not m.bot)
+    # Classement vocal
+    top_vocal = sorted(trophees_db.get(gid, {}).items(), key=lambda x: x[1].get("voice_minutes", 0), reverse=True)
+    rank_vocal = next((i + 1 for i, (u, _) in enumerate(top_vocal) if u == uid), "?")
 
-    # Badges
     badges = get_trophee_badges(votes, voice_min, booster)
 
-    # Construire l'embed
-    e = discord.Embed(
-        title=f"🏆 Trophée de {member.display_name}",
-        color=discord.Color.gold(),
-        timestamp=datetime.utcnow()
-    )
+    # Barres de progression
+    VOTE_MILESTONES  = [10, 50, 100, 200, 500]
+    VOICE_MILESTONES = [10, 50, 100, 200, 500]
 
-    # Avatar du membre + icône du serveur
+    next_v  = next((n for n in VOTE_MILESTONES  if n > votes),   None)
+    prev_v  = max((n for n in [0]+VOTE_MILESTONES  if n <= votes),   default=0)
+    next_vh = next((n for n in VOICE_MILESTONES if n > voice_h),  None)
+    prev_vh = max((n for n in [0]+VOICE_MILESTONES if n <= voice_h), default=0)
+
+    bar_votes = _progress_bar(votes,   next_v  or votes+1,  prev_v)  if next_v  else "█" * 12
+    bar_voice = _progress_bar(voice_h, next_vh or voice_h+1, prev_vh) if next_vh else "█" * 12
+
+    GOLD = 0xFFD700
+    e = discord.Embed(color=GOLD, timestamp=datetime.utcnow())
+    e.set_author(name=f"🏆  Trophée de {member.display_name}", icon_url=member.display_avatar.url)
     e.set_thumbnail(url=member.display_avatar.url)
-    if guild.icon:
-        e.set_author(name=guild.name, icon_url=guild.icon.url)
 
-    # Stats personnelles
     e.add_field(
-        name="📊 Statistiques Personnelles",
+        name="🗳️ Votes",
         value=(
-            f"🗳️ **Votes :** {votes}\n"
-            f"🎙️ **Temps en vocal :** {voice_hours}h {voice_rest}min\n"
-            f"💎 **Booster :** {'Oui ✅' if booster else 'Non ❌'}"
+            f"**{votes}** vote(s)\n"
+            f"`{bar_votes}` → **{next_v or '✅ MAX'}**"
         ),
         inline=True
     )
-
-    # Stats du serveur (avec icône du serveur)
     e.add_field(
-        name="🌐 Stats du Serveur",
+        name="🎙️ Temps vocal",
         value=(
-            f"💎 **Boosts :** {boosts}\n"
-            f"🎙️ **En vocal maintenant :** {in_voice}\n"
-            f"👥 **Membres :** {guild.member_count}"
+            f"**{voice_h}h {voice_m}min**\n"
+            f"`{bar_voice}` → **{next_vh or '✅ MAX'}h**"
         ),
         inline=True
     )
-
-    # Badges
     e.add_field(
-        name="🎖️ Badges Obtenus",
-        value="\n".join(badges),
+        name="⭐ Niveau XP",
+        value=f"Niv. **{lvl}**  •  `{xp}` XP\n🎙️ Rang vocal : **#{rank_vocal}**",
+        inline=True
+    )
+    e.add_field(
+        name="🎖️ Badges",
+        value="  ".join(badges) if badges else "🌱 Aucun badge encore",
         inline=False
     )
+    if booster:
+        e.add_field(name="💎 Booster", value="Merci de booster le serveur !", inline=False)
 
-    # Barre de progression votes
-    next_vote_milestone = next((n for n in [10, 50, 100, 200, 500] if n > votes), None)
-    if next_vote_milestone:
-        prev = max((n for n in [0, 10, 50, 100, 200] if n <= votes), default=0)
-        progress = votes - prev
-        total    = next_vote_milestone - prev
-        filled   = int((progress / total) * 10)
-        bar      = "█" * filled + "░" * (10 - filled)
-        e.add_field(
-            name=f"🗳️ Progression Votes → {next_vote_milestone}",
-            value=f"`[{bar}]` {votes}/{next_vote_milestone}",
-            inline=False
-        )
+    e.set_footer(text=f"Kozakura  •  {guild.name}", icon_url=guild.me.display_avatar.url)
 
-    # Barre de progression vocal
-    next_voice_milestone = next((n for n in [10, 50, 100, 200, 500] if n > voice_hours), None)
-    if next_voice_milestone:
-        prev_h = max((n for n in [0, 10, 50, 100, 200] if n <= voice_hours), default=0)
-        progress_h = voice_hours - prev_h
-        total_h    = next_voice_milestone - prev_h
-        filled_h   = int((progress_h / total_h) * 10) if total_h > 0 else 0
-        bar_h      = "█" * filled_h + "░" * (10 - filled_h)
-        e.add_field(
-            name=f"🎙️ Progression Vocal → {next_voice_milestone}h",
-            value=f"`[{bar_h}]` {voice_hours}/{next_voice_milestone}h",
-            inline=False
-        )
-
-    e.set_footer(text=f"Trophée de {member.display_name} • {guild.name}")
-
-    # Envoyer dans le salon trophées si configuré, sinon dans le salon actuel
     if ch_id:
         trophee_ch = guild.get_channel(int(ch_id))
         if trophee_ch and trophee_ch != ctx.channel:
             await trophee_ch.send(embed=e)
             await ctx.send(f"✅ Trophée envoyé dans {trophee_ch.mention} !", delete_after=5)
             return
-
     await ctx.send(embed=e)
 
 @bot.command()
 async def topvotes(ctx):
     """!topvotes — Classement des membres par votes"""
-    gid = str(ctx.guild.id)
+    gid  = str(ctx.guild.id)
     data = trophees_db.get(gid, {})
-    top = sorted(data.items(), key=lambda x: x[1].get("votes", 0), reverse=True)[:10]
-
-    e = discord.Embed(title="🗳️ Top Votes du Serveur", color=discord.Color.gold(),
-        timestamp=datetime.utcnow())
-    if ctx.guild.icon: e.set_thumbnail(url=ctx.guild.icon.url)
-
+    top  = sorted(data.items(), key=lambda x: x[1].get("votes", 0), reverse=True)[:10]
     medals = ["🥇", "🥈", "🥉"] + ["🏅"] * 7
+
+    e = discord.Embed(
+        title="🗳️  Top Votes — Kozakura",
+        color=0xFFD700,
+        timestamp=datetime.utcnow()
+    )
+    if ctx.guild.icon: e.set_thumbnail(url=ctx.guild.icon.url)
     if not top:
         e.description = "Aucun vote enregistré pour l'instant."
     else:
+        lines = []
         for i, (uid, d) in enumerate(top):
-            m = ctx.guild.get_member(int(uid))
+            m     = ctx.guild.get_member(int(uid))
             votes = d.get("votes", 0)
-            e.add_field(
-                name=f"{medals[i]} {m.display_name if m else uid}",
-                value=f"🗳️ **{votes}** vote(s)",
-                inline=False
-            )
+            name  = m.display_name if m else f"*{uid}*"
+            lines.append(f"{medals[i]} **{name}** — `{votes}` vote(s)")
+        e.description = "\n".join(lines)
+    e.set_footer(text=f"Kozakura  •  {ctx.guild.name}")
     await ctx.send(embed=e)
 
 @bot.command()
 async def topvocal(ctx):
     """!topvocal — Classement des membres par temps vocal"""
-    gid = str(ctx.guild.id)
+    gid  = str(ctx.guild.id)
     data = trophees_db.get(gid, {})
-    top = sorted(data.items(), key=lambda x: x[1].get("voice_minutes", 0), reverse=True)[:10]
-
-    e = discord.Embed(title="🎙️ Top Vocal du Serveur", color=discord.Color.blurple(),
-        timestamp=datetime.utcnow())
-    if ctx.guild.icon: e.set_thumbnail(url=ctx.guild.icon.url)
-
+    top  = sorted(data.items(), key=lambda x: x[1].get("voice_minutes", 0), reverse=True)[:10]
     medals = ["🥇", "🥈", "🥉"] + ["🏅"] * 7
+
+    e = discord.Embed(
+        title="🎙️  Top Vocal — Kozakura",
+        color=discord.Color.from_rgb(88, 101, 242),
+        timestamp=datetime.utcnow()
+    )
+    if ctx.guild.icon: e.set_thumbnail(url=ctx.guild.icon.url)
     if not top:
         e.description = "Aucune donnée vocale enregistrée pour l'instant."
     else:
+        lines = []
         for i, (uid, d) in enumerate(top):
-            m = ctx.guild.get_member(int(uid))
+            m  = ctx.guild.get_member(int(uid))
             vm = d.get("voice_minutes", 0)
-            h = vm // 60; mn = vm % 60
-            e.add_field(
-                name=f"{medals[i]} {m.display_name if m else uid}",
-                value=f"🎙️ **{h}h {mn}min**",
-                inline=False
-            )
+            h  = vm // 60; mn = vm % 60
+            name = m.display_name if m else f"*{uid}*"
+            lines.append(f"{medals[i]} **{name}** — `{h}h {mn}min`")
+        e.description = "\n".join(lines)
+    e.set_footer(text=f"Kozakura  •  {ctx.guild.name}")
     await ctx.send(embed=e)
 
 # ══════════════════════════════════════════════════════════════════════════════
