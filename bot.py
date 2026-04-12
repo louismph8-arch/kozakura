@@ -128,6 +128,12 @@ titles_db      = load_json("titles.json", {})       # {guild_id: {user_id: title
 watchlist_db   = load_json("watchlist.json", {})    # {guild_id: {user_id: {reason, by, date}}}
 shadowban_db   = load_json("shadowban.json", {})    # {guild_id: {user_id: True}}
 reports_db     = load_json("reports.json", {})      # {guild_id: [{reporter, target, reason, date}]}
+giveaway_db    = load_json("giveaways.json", {})    # {guild_id: {message_id: {...}}}
+starboard_db   = load_json("starboard.json", {})    # {guild_id: {message_id: starboard_msg_id}}
+afk_db         = load_json("afk.json", {})          # {guild_id: {user_id: {reason, since}}}
+birthdays_db   = load_json("birthdays.json", {})    # {guild_id: {user_id: "DD/MM"}}
+tempbans_db    = load_json("tempbans.json", {})      # {guild_id: {user_id: {unban_at, reason}}}
+streaks_db     = load_json("streaks.json", {})       # {guild_id: {user_id: {last_date, streak}}}      # {guild_id: [{reporter, target, reason, date}]}
 
 # ─── VARIABLES EN MÉMOIRE ─────────────────────────────────────────────────────
 message_tracker  = defaultdict(list)
@@ -211,6 +217,8 @@ SUSPICIOUS_LINKS = [
 XP_PER_MSG       = 10
 XP_COOLDOWN      = 60
 LEVEL_ROLES      = {5: "Niveau 5", 10: "Niveau 10", 20: "Niveau 20", 50: "Niveau 50"}
+STARBOARD_THRESHOLD = 3   # nombre de ⭐ pour apparaître dans le starboard
+STREAK_BONUS_XP     = 20  # XP bonus par streak quotidien
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 🔒 VARIABLES DE SÉCURITÉ AVANCÉE
@@ -992,15 +1000,47 @@ async def on_message(message):
     if now - last > XP_COOLDOWN:
         xp_cooldowns[uid] = now
         xp_db.setdefault(gid, {})
-        old_xp = xp_db[gid].get(uid, 0); old_level = get_level(old_xp)
-        xp_db[gid][uid] = old_xp + XP_PER_MSG
+        old_xp    = xp_db[gid].get(uid, 0)
+        old_level = get_level(old_xp)
+
+        # ── Streak quotidien ──────────────────────────────────────────────────
+        today     = datetime.utcnow().strftime("%Y-%m-%d")
+        s_data    = streaks_db.setdefault(gid, {}).setdefault(uid, {"last_date": "", "streak": 0})
+        yesterday = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
+        streak_xp = 0
+        if s_data["last_date"] == yesterday:
+            s_data["streak"] += 1
+            streak_xp = STREAK_BONUS_XP
+        elif s_data["last_date"] != today:
+            s_data["streak"] = 1
+        s_data["last_date"] = today
+        save_json("streaks.json", streaks_db)
+
+        gained = XP_PER_MSG + streak_xp
+        xp_db[gid][uid] = old_xp + gained
         new_level = get_level(xp_db[gid][uid])
         save_json("xp.json", xp_db)
+
         if new_level > old_level:
-            e = discord.Embed(title="🎉 Level Up!",
-                description=f"{author.mention} passe au **niveau {new_level}** !",
-                color=discord.Color.gold(), timestamp=datetime.utcnow())
-            # Envoyer dans ⭐・niveaux si le salon existe, sinon le salon actuel
+            SAKURA_PINK = 0xFF89B4
+            next_xp  = xp_for_level(new_level + 1)
+            e = discord.Embed(
+                title="⭐  Level Up !",
+                description=(
+                    f"## {author.mention}\n"
+                    f"Félicitations, tu passes au **niveau {new_level}** !\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                ),
+                color=SAKURA_PINK,
+                timestamp=datetime.utcnow()
+            )
+            e.set_thumbnail(url=author.display_avatar.url)
+            e.add_field(name="🏅 Nouveau niveau", value=f"`{new_level}`",            inline=True)
+            e.add_field(name="✨ XP total",        value=f"`{xp_db[gid][uid]}`",     inline=True)
+            e.add_field(name="🎯 Prochain niveau", value=f"`{next_xp}` XP",          inline=True)
+            if s_data["streak"] > 1:
+                e.add_field(name="🔥 Streak", value=f"{s_data['streak']} jours consécutifs !", inline=False)
+            e.set_footer(text=f"Kozakura XP  •  {guild.name}")
             level_ch = discord.utils.find(
                 lambda c: "niveaux" in c.name.lower() or "niveau" in c.name.lower(),
                 guild.text_channels)
@@ -1017,6 +1057,31 @@ async def on_message(message):
         if trigger in custom_cmds_db[gid]:
             await message.channel.send(custom_cmds_db[gid][trigger])
             return
+
+    # ── AFK — retour de l'auteur ──────────────────────────────────────────────
+    if not message.content.startswith(PREFIX):
+        afk_entry = afk_db.get(gid, {}).get(uid)
+        if afk_entry:
+            del afk_db[gid][uid]
+            save_json("afk.json", afk_db)
+            try:
+                await message.reply(
+                    f"✅ Bienvenue de retour {author.mention} ! Ton statut AFK a été retiré.",
+                    delete_after=8, mention_author=False)
+            except Exception: pass
+
+    # ── AFK — mention d'un membre AFK ────────────────────────────────────────
+    for mentioned in message.mentions:
+        m_uid = str(mentioned.id)
+        afk_entry = afk_db.get(gid, {}).get(m_uid)
+        if afk_entry and m_uid != uid:
+            since = afk_entry.get("since", "")
+            reason = afk_entry.get("reason", "Pas de raison")
+            try:
+                await message.reply(
+                    f"💤 **{mentioned.display_name}** est AFK depuis `{since[:16]}`\n**Raison :** {reason}",
+                    delete_after=10, mention_author=False)
+            except Exception: pass
 
     # ── IA — Réponse automatique ──────────────────────────────────────────────
     # Ne pas répondre si c'est une commande
@@ -3669,6 +3734,50 @@ async def on_raw_reaction_add(payload):
         if role and member:
             try: await member.add_roles(role)
             except Exception: pass
+
+    # ── Starboard ─────────────────────────────────────────────────────────────
+    if str(payload.emoji) == "⭐":
+        guild  = bot.get_guild(payload.guild_id)
+        if not guild: return
+        gid    = str(guild.id)
+        sb_ch_id = get_cfg(guild.id, "starboard_channel")
+        if not sb_ch_id: return
+        sb_ch = guild.get_channel(int(sb_ch_id))
+        if not sb_ch: return
+        try:
+            ch      = guild.get_channel(payload.channel_id)
+            message = await ch.fetch_message(payload.message_id)
+        except Exception: return
+        # Compter les ⭐
+        star_count = 0
+        for r in message.reactions:
+            if str(r.emoji) == "⭐":
+                star_count = r.count
+                break
+        if star_count < STARBOARD_THRESHOLD: return
+        sb_key = str(payload.message_id)
+        existing_id = starboard_db.get(gid, {}).get(sb_key)
+        # Construire l'embed starboard
+        e = discord.Embed(
+            description=message.content[:2000] if message.content else "",
+            color=0xFFD700,
+            timestamp=message.created_at
+        )
+        e.set_author(name=message.author.display_name, icon_url=message.author.display_avatar.url)
+        e.add_field(name="📌 Source", value=f"[Aller au message]({message.jump_url})", inline=True)
+        e.add_field(name="⭐ Étoiles", value=f"`{star_count}`", inline=True)
+        if message.attachments:
+            e.set_image(url=message.attachments[0].url)
+        e.set_footer(text=f"#{ch.name}  •  {guild.name}")
+        if existing_id:
+            try:
+                sb_msg = await sb_ch.fetch_message(int(existing_id))
+                await sb_msg.edit(embed=e)
+            except Exception: pass
+        else:
+            sb_msg = await sb_ch.send(embed=e)
+            starboard_db.setdefault(gid, {})[sb_key] = str(sb_msg.id)
+            save_json("starboard.json", starboard_db)
 
 @bot.event
 async def on_raw_reaction_remove(payload):
@@ -7904,6 +8013,462 @@ async def greetings_task():
 async def start_greetings():
     if not greetings_task.is_running():
         greetings_task.start()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 💤 AFK
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.command()
+async def afk(ctx, *, reason="Pas de raison"):
+    """!afk [raison] — Passe en mode AFK"""
+    gid = str(ctx.guild.id); uid = str(ctx.author.id)
+    afk_db.setdefault(gid, {})[uid] = {"reason": reason, "since": str(datetime.utcnow())}
+    save_json("afk.json", afk_db)
+    e = discord.Embed(
+        description=f"💤 **{ctx.author.display_name}** est maintenant AFK\n**Raison :** {reason}",
+        color=discord.Color.from_rgb(88, 101, 242),
+        timestamp=datetime.utcnow()
+    )
+    e.set_footer(text="Tu seras retiré de l'AFK dès ton prochain message.")
+    await ctx.send(embed=e)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🎁 GIVEAWAY
+# ══════════════════════════════════════════════════════════════════════════════
+
+class GiveawayView(discord.ui.View):
+    def __init__(self): super().__init__(timeout=None)
+
+    @discord.ui.button(label="Participer", emoji="🎉", style=discord.ButtonStyle.green, custom_id="gw_enter")
+    async def enter(self, interaction: discord.Interaction, _: discord.ui.Button):
+        gid = str(interaction.guild_id); mid = str(interaction.message.id)
+        gw  = giveaway_db.get(gid, {}).get(mid)
+        if not gw:
+            return await interaction.response.send_message("❌ Giveaway introuvable.", ephemeral=True)
+        if gw.get("ended"):
+            return await interaction.response.send_message("❌ Ce giveaway est terminé.", ephemeral=True)
+        uid = str(interaction.user.id)
+        participants = gw.setdefault("participants", [])
+        if uid in participants:
+            participants.remove(uid)
+            save_json("giveaways.json", giveaway_db)
+            return await interaction.response.send_message("✅ Tu t'es retiré du giveaway.", ephemeral=True)
+        participants.append(uid)
+        save_json("giveaways.json", giveaway_db)
+        await interaction.response.send_message(
+            f"🎉 Tu participes ! **{len(participants)}** participant(s) au total.", ephemeral=True)
+
+
+@bot.command()
+@commands.has_permissions(manage_guild=True)
+async def giveaway(ctx, duration: str = "1h", *, prize: str = "Surprise"):
+    """!giveaway [durée: ex 30m / 2h / 1j] [lot] — Lance un giveaway"""
+    units = {"s": 1, "m": 60, "h": 3600, "j": 86400}
+    unit  = duration[-1].lower()
+    try:
+        secs = int(duration[:-1]) * units.get(unit, 60)
+    except ValueError:
+        return await ctx.send("❌ Format : `!giveaway 2h Prix incroyable`", delete_after=5)
+    end_time = datetime.utcnow() + timedelta(seconds=secs)
+    gid = str(ctx.guild.id)
+
+    e = discord.Embed(
+        title=f"🎉  GIVEAWAY — {prize}",
+        description=(
+            f"Clique sur **Participer** pour tenter ta chance !\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⏰ **Fin :** <t:{int(end_time.timestamp())}:R>\n"
+            f"🏆 **Lot :** {prize}\n"
+            f"👤 **Organisateur :** {ctx.author.mention}"
+        ),
+        color=0xFFD700,
+        timestamp=end_time
+    )
+    e.set_footer(text=f"Fin le  •  Kozakura Giveaway")
+    msg = await ctx.send(embed=e, view=GiveawayView())
+    giveaway_db.setdefault(gid, {})[str(msg.id)] = {
+        "prize":        prize,
+        "end_time":     end_time.isoformat(),
+        "channel_id":   ctx.channel.id,
+        "host_id":      ctx.author.id,
+        "participants": [],
+        "ended":        False,
+    }
+    save_json("giveaways.json", giveaway_db)
+    # Supprimer le message de commande
+    try: await ctx.message.delete()
+    except Exception: pass
+
+
+@bot.command(name="gend")
+@commands.has_permissions(manage_guild=True)
+async def giveaway_end(ctx, message_id: int):
+    """!gend [message_id] — Termine un giveaway manuellement"""
+    gid = str(ctx.guild.id); mid = str(message_id)
+    gw  = giveaway_db.get(gid, {}).get(mid)
+    if not gw:
+        return await ctx.send("❌ Giveaway introuvable.", delete_after=5)
+    await _end_giveaway(ctx.guild, mid, gw)
+
+
+async def _end_giveaway(guild, mid: str, gw: dict):
+    gid = str(guild.id)
+    if gw.get("ended"): return
+    gw["ended"] = True
+    save_json("giveaways.json", giveaway_db)
+    ch = guild.get_channel(gw["channel_id"])
+    if not ch: return
+    participants = gw.get("participants", [])
+    prize = gw.get("prize", "Surprise")
+    if not participants:
+        e = discord.Embed(title="🎉 Giveaway Terminé", description="Aucun participant 😔", color=discord.Color.red())
+        try:
+            msg = await ch.fetch_message(int(mid))
+            await msg.edit(embed=e, view=None)
+        except Exception: pass
+        return
+    import random
+    winner_id = random.choice(participants)
+    winner    = guild.get_member(int(winner_id))
+    e = discord.Embed(
+        title="🎉  Giveaway Terminé !",
+        description=(
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🏆 **Gagnant :** {winner.mention if winner else f'<@{winner_id}>'}\n"
+            f"🎁 **Lot :** {prize}\n"
+            f"👥 **Participants :** {len(participants)}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=0xFFD700, timestamp=datetime.utcnow()
+    )
+    e.set_footer(text="Kozakura Giveaway")
+    try:
+        msg = await ch.fetch_message(int(mid))
+        await msg.edit(embed=e, view=None)
+    except Exception: pass
+    await ch.send(f"🎊 Félicitations {winner.mention if winner else f'<@{winner_id}>'} ! Tu gagnes **{prize}** !")
+    if winner:
+        try:
+            dm_e = discord.Embed(
+                title="🎉 Tu as gagné un giveaway !",
+                description=f"**Serveur :** {guild.name}\n**Lot :** {prize}\n\nFélicitations ! 🥳",
+                color=0xFFD700)
+            await winner.send(embed=dm_e)
+        except Exception: pass
+
+
+@tasks.loop(minutes=1)
+async def check_giveaways():
+    now = datetime.utcnow()
+    for gid, gws in list(giveaway_db.items()):
+        guild = discord.utils.get(bot.guilds, id=int(gid))
+        if not guild: continue
+        for mid, gw in list(gws.items()):
+            if gw.get("ended"): continue
+            end_time = datetime.fromisoformat(gw["end_time"])
+            if now >= end_time:
+                await _end_giveaway(guild, mid, gw)
+
+
+@bot.listen("on_ready")
+async def start_giveaway_checker():
+    if not check_giveaways.is_running():
+        check_giveaways.start()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ⭐ STARBOARD CONFIG
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setstarboard(ctx, *, arg: str):
+    """!setstarboard #salon — Définit le salon starboard"""
+    channel = await resolve_channel(ctx, arg)
+    if not channel: return await ctx.send("❌ Salon introuvable.")
+    set_cfg(ctx.guild.id, "starboard_channel", channel.id)
+    await ctx.send(f"✅ Starboard → {channel.mention}  (seuil : **{STARBOARD_THRESHOLD}** ⭐)")
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setstarboardthreshold(ctx, n: int):
+    """!setstarboardthreshold [n] — Nombre de ⭐ requis pour le starboard"""
+    global STARBOARD_THRESHOLD
+    STARBOARD_THRESHOLD = max(1, n)
+    await ctx.send(f"✅ Seuil starboard → **{STARBOARD_THRESHOLD}** ⭐")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 📅 ANNIVERSAIRES
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.command()
+async def birthday(ctx, date: str = None):
+    """!birthday [JJ/MM] — Enregistre ton anniversaire (ou affiche la liste)"""
+    gid = str(ctx.guild.id); uid = str(ctx.author.id)
+    if date is None:
+        # Afficher les prochains anniversaires
+        data = birthdays_db.get(gid, {})
+        if not data:
+            return await ctx.send("Aucun anniversaire enregistré.", delete_after=5)
+        today = datetime.utcnow()
+        entries = []
+        for u, d in data.items():
+            try:
+                day, month = map(int, d.split("/"))
+                bday = datetime(today.year, month, day)
+                if bday < today.replace(hour=0, minute=0, second=0, microsecond=0):
+                    bday = datetime(today.year + 1, month, day)
+                entries.append((bday, u, d))
+            except Exception: continue
+        entries.sort()
+        e = discord.Embed(title="🎂  Prochains Anniversaires", color=0xFF89B4, timestamp=datetime.utcnow())
+        if ctx.guild.icon: e.set_thumbnail(url=ctx.guild.icon.url)
+        lines = []
+        for bday, u, d in entries[:10]:
+            m = ctx.guild.get_member(int(u))
+            name = m.display_name if m else f"*{u}*"
+            lines.append(f"🎂 **{name}** — `{d}` (<t:{int(bday.timestamp())}:R>)")
+        e.description = "\n".join(lines) if lines else "Aucun anniversaire."
+        return await ctx.send(embed=e)
+    # Enregistrer
+    import re as _re
+    if not _re.match(r"^\d{2}/\d{2}$", date):
+        return await ctx.send("❌ Format : `!birthday 25/12`", delete_after=5)
+    try:
+        day, month = map(int, date.split("/"))
+        datetime(2000, month, day)  # Valider la date
+    except ValueError:
+        return await ctx.send("❌ Date invalide.", delete_after=5)
+    birthdays_db.setdefault(gid, {})[uid] = date
+    save_json("birthdays.json", birthdays_db)
+    await ctx.send(f"🎂 Anniversaire enregistré : **{date}** !", delete_after=8)
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setbirthday(ctx, channel_arg: str):
+    """!setbirthday #salon — Salon des annonces d'anniversaires"""
+    channel = await resolve_channel(ctx, channel_arg)
+    if not channel: return await ctx.send("❌ Salon introuvable.")
+    set_cfg(ctx.guild.id, "birthday_channel", channel.id)
+    await ctx.send(f"✅ Annonces anniversaires → {channel.mention}")
+
+
+@tasks.loop(minutes=1)
+async def check_birthdays():
+    now = datetime.utcnow()
+    if now.hour != 8 or now.minute != 0: return
+    today_str = now.strftime("%d/%m")
+    for guild in bot.guilds:
+        gid     = str(guild.id)
+        ch_id   = get_cfg(guild.id, "birthday_channel")
+        if not ch_id: continue
+        ch = guild.get_channel(int(ch_id))
+        if not ch: continue
+        for uid, date in birthdays_db.get(gid, {}).items():
+            if date == today_str:
+                member = guild.get_member(int(uid))
+                if not member: continue
+                e = discord.Embed(
+                    title="🎂  Joyeux Anniversaire !",
+                    description=(
+                        f"## 🎉 {member.mention}\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"Toute l'équipe Kozakura te souhaite un **joyeux anniversaire** ! 🌸🎊"
+                    ),
+                    color=0xFF89B4,
+                    timestamp=datetime.utcnow()
+                )
+                e.set_thumbnail(url=member.display_avatar.url)
+                e.set_footer(text="Kozakura  •  Bon anniversaire !")
+                await ch.send(content=member.mention, embed=e)
+
+
+@bot.listen("on_ready")
+async def start_birthday_checker():
+    if not check_birthdays.is_running():
+        check_birthdays.start()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🔨 BAN TEMPORAIRE
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.command()
+async def tempban(ctx, member: discord.Member = None, duration: str = "1h", *, reason="Aucune raison"):
+    """!tempban @membre [durée: 30m/2h/1j] [raison] — Ban temporaire"""
+    if member is None:
+        return await ctx.send("❌ Usage : `!tempban @membre [durée] [raison]`", delete_after=5)
+    if not has_sanction_role(ctx.author, ROLES_BAN):
+        return await ctx.send("❌ Tu n'as pas la permission de bannir.", delete_after=5)
+    if member.top_role >= ctx.guild.me.top_role:
+        return await ctx.send("❌ Je ne peux pas bannir ce membre (hiérarchie des rôles).", delete_after=5)
+    units = {"s": 1, "m": 60, "h": 3600, "j": 86400}
+    unit  = duration[-1].lower()
+    try:
+        secs = int(duration[:-1]) * units.get(unit, 3600)
+    except ValueError:
+        return await ctx.send("❌ Format de durée invalide. Ex: `30m`, `2h`, `1j`", delete_after=5)
+    unban_at = (datetime.utcnow() + timedelta(seconds=secs)).isoformat()
+    gid = str(ctx.guild.id); uid = str(member.id)
+    await dm(member, "🔨 Tu as été banni temporairement",
+        f"**Serveur :** {ctx.guild.name}\n**Durée :** {duration}\n**Raison :** {reason}\n\nTu seras automatiquement débanni.",
+        color=discord.Color.dark_red())
+    try:
+        await member.ban(reason=f"[TempBan {duration}] {reason}", delete_message_days=1)
+    except discord.Forbidden:
+        return await ctx.send("❌ Permission refusée.", delete_after=5)
+    tempbans_db.setdefault(gid, {})[uid] = {"unban_at": unban_at, "reason": reason, "by": str(ctx.author.id)}
+    save_json("tempbans.json", tempbans_db)
+    e = discord.Embed(
+        title="🔨  Ban Temporaire",
+        description=(
+            f"**Membre :** {member.mention} (`{member.id}`)\n"
+            f"**Durée :** {duration}\n"
+            f"**Raison :** {reason}\n"
+            f"**Débanni le :** <t:{int((datetime.utcnow() + timedelta(seconds=secs)).timestamp())}:F>"
+        ),
+        color=discord.Color.dark_red(), timestamp=datetime.utcnow()
+    )
+    e.set_footer(text=f"Par {ctx.author}  •  {ctx.guild.name}")
+    await ctx.send(embed=e)
+    e_log = await log_sanction(ctx.guild, member, "TempBan", reason, ctx.author, extra=f"Durée : {duration}")
+    _ = e_log  # already sent inside log_sanction
+
+
+@tasks.loop(minutes=1)
+async def check_tempbans():
+    now = datetime.utcnow()
+    for gid, bans in list(tempbans_db.items()):
+        guild = discord.utils.get(bot.guilds, id=int(gid))
+        if not guild: continue
+        for uid, data in list(bans.items()):
+            unban_at = datetime.fromisoformat(data["unban_at"])
+            if now >= unban_at:
+                try:
+                    user = await bot.fetch_user(int(uid))
+                    await guild.unban(user, reason="[TempBan] Durée expirée")
+                    try:
+                        dm_e = discord.Embed(
+                            title="✅ Tu as été débanni",
+                            description=f"**Serveur :** {guild.name}\nTon ban temporaire a expiré.",
+                            color=discord.Color.green())
+                        await user.send(embed=dm_e)
+                    except Exception: pass
+                except Exception: pass
+                del tempbans_db[gid][uid]
+                save_json("tempbans.json", tempbans_db)
+
+
+@bot.listen("on_ready")
+async def start_tempban_checker():
+    if not check_tempbans.is_running():
+        check_tempbans.start()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 👋 MESSAGE DE DÉPART
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.listen("on_member_remove")
+async def send_leave_message(member: discord.Member):
+    if member.bot: return
+    guild  = member.guild
+    ch_id  = get_cfg(guild.id, "welcome_channel")
+    if not ch_id: return
+    ch = guild.get_channel(int(ch_id))
+    if not ch: return
+    SAKURA_PINK = 0xFF89B4
+    e = discord.Embed(
+        description=(
+            f"## 👋  Au revoir, {member.mention}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"**{member.display_name}** a quitté le serveur.\n"
+            f"Il reste **{guild.member_count}** membres."
+        ),
+        color=SAKURA_PINK,
+        timestamp=datetime.utcnow()
+    )
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.set_footer(text=f"Kozakura  •  {guild.name}", icon_url=guild.me.display_avatar.url)
+    await ch.send(embed=e)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🔥 STREAK
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.command()
+async def streak(ctx, member: discord.Member = None):
+    """!streak [@membre] — Affiche le streak quotidien"""
+    member = member or ctx.author
+    gid = str(ctx.guild.id); uid = str(member.id)
+    s_data = streaks_db.get(gid, {}).get(uid, {"streak": 0, "last_date": ""})
+    streak_val = s_data.get("streak", 0)
+    last = s_data.get("last_date", "?")
+    e = discord.Embed(
+        description=(
+            f"## 🔥  Streak de {member.display_name}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"**{streak_val}** jour(s) consécutifs\n"
+            f"Bonus XP par message : `+{streak_val > 0 and STREAK_BONUS_XP or 0}` XP"
+        ),
+        color=0xFF6B35,
+        timestamp=datetime.utcnow()
+    )
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.add_field(name="📅 Dernier message", value=last[:10] if last != "?" else "?", inline=True)
+    e.set_footer(text=f"Kozakura XP  •  {ctx.guild.name}")
+    await ctx.send(embed=e)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 👤 USERINFO
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.command()
+async def userinfo(ctx, member: discord.Member = None):
+    """!userinfo [@membre] — Fiche complète et belle d'un membre"""
+    member = member or ctx.author
+    gid = str(ctx.guild.id); uid = str(member.id)
+    xp      = xp_db.get(gid, {}).get(uid, 0)
+    lvl     = get_level(xp)
+    warns   = len(warnings_db.get(gid, {}).get(uid, []))
+    gdata   = xp_db.get(gid, {})
+    sorted_lb = sorted(gdata.items(), key=lambda x: x[1], reverse=True)
+    rank_pos  = next((i + 1 for i, (u, _) in enumerate(sorted_lb) if u == uid), "?")
+    streak_val = streaks_db.get(gid, {}).get(uid, {}).get("streak", 0)
+    roles   = [r.mention for r in member.roles if r.name != "@everyone"]
+    created = member.created_at.strftime("%d/%m/%Y")
+    joined  = member.joined_at.strftime("%d/%m/%Y") if member.joined_at else "?"
+    account_age = (datetime.utcnow() - member.created_at.replace(tzinfo=None)).days
+    SAKURA_PINK = 0xFF89B4
+    e = discord.Embed(
+        description=(
+            f"## {member.mention}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=SAKURA_PINK if not member.color.value else member.color,
+        timestamp=datetime.utcnow()
+    )
+    e.set_author(name=f"{member}  •  {member.id}", icon_url=member.display_avatar.url)
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.add_field(name="📅 Compte créé",   value=f"{created}\n(il y a `{account_age}` jours)", inline=True)
+    e.add_field(name="📥 Rejoint le",    value=joined,                                         inline=True)
+    e.add_field(name="🤖 Bot",           value="Oui" if member.bot else "Non",                 inline=True)
+    e.add_field(name="⭐ Niveau XP",     value=f"Niv. `{lvl}`  •  `{xp}` XP",                 inline=True)
+    e.add_field(name="🏆 Classement",    value=f"#{rank_pos}",                                 inline=True)
+    e.add_field(name="🔥 Streak",        value=f"`{streak_val}` jours",                        inline=True)
+    e.add_field(name="⚠️ Avertissements", value=f"`{warns}`",                                  inline=True)
+    e.add_field(name="💎 Booster",       value="Oui 💎" if member.premium_since else "Non",    inline=True)
+    e.add_field(name=f"🎭 Rôles `({len(roles)})`",
+        value=", ".join(roles[:6]) + ("…" if len(roles) > 6 else "") if roles else "*aucun*",
+        inline=False)
+    e.set_footer(text=f"Kozakura  •  {ctx.guild.name}")
+    await ctx.send(embed=e)
 
 
 if __name__ == "__main__":
