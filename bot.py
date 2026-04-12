@@ -1807,7 +1807,6 @@ async def bvn(ctx, member: discord.Member = None):
         await ctx.send("❌ Salon de bienvenue introuvable (ID: `1477427118391558195`).", delete_after=8)
 
 # ─── SUGGESTIONS / SONDAGES ───────────────────────────────────────────────────
-@bot.command()
 class SuggestionView(discord.ui.View):
     def __init__(self): super().__init__(timeout=None)
 
