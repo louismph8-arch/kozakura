@@ -431,6 +431,12 @@ async def on_ready():
         synced = await bot.tree.sync()
         print(f"⚡ {len(synced)} slash commands synchronisées")
     except Exception as e: print(e)
+
+    # ── Enregistrement des Views persistantes (survie aux redémarrages) ────────
+    bot.add_view(TicketPanelView())
+    bot.add_view(TicketControlView())
+    print("✅ Views persistantes enregistrées (ticket panel + contrôles)")
+
     # Repopuler voice_join_times pour les membres déjà en vocal au redémarrage
     for guild in bot.guilds:
         for vc in guild.voice_channels:
