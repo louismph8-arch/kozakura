@@ -437,6 +437,32 @@ async def on_ready():
     bot.add_view(TicketControlView())
     print("✅ Views persistantes enregistrées (ticket panel + contrôles)")
 
+    # ── Auto-restore du panel ticket si le message a été supprimé ─────────────
+    for guild in bot.guilds:
+        ch_id  = get_cfg(guild.id, "ticket_panel_channel")
+        msg_id = get_cfg(guild.id, "ticket_panel_message")
+        if not ch_id:
+            continue
+        ch = guild.get_channel(int(ch_id))
+        if not ch:
+            continue
+        panel_exists = False
+        if msg_id:
+            try:
+                await ch.fetch_message(int(msg_id))
+                panel_exists = True  # Le message existe encore, rien à faire
+            except Exception:
+                panel_exists = False
+        if not panel_exists:
+            # Renvoyer automatiquement le panel
+            try:
+                e = _build_ticket_panel_embed(guild)
+                new_msg = await ch.send(embed=e, view=TicketPanelView())
+                set_cfg(guild.id, "ticket_panel_message", new_msg.id)
+                print(f"♻️ Panel ticket renvoyé dans #{ch.name} ({guild.name})")
+            except Exception as err:
+                print(f"⚠️ Impossible de renvoyer le panel ticket : {err}")
+
     # Repopuler voice_join_times pour les membres déjà en vocal au redémarrage
     for guild in bot.guilds:
         for vc in guild.voice_channels:
@@ -2518,10 +2544,8 @@ async def setticketlog(ctx, *, arg: str):
     set_cfg(ctx.guild.id, "ticket_log_channel", channel.id)
     await ctx.send(f"✅ Logs tickets → {channel.mention}")
 
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def ticketpanel(ctx):
-    """Envoie le panel de tickets avec les 4 boutons"""
+def _build_ticket_panel_embed(guild):
+    """Construit l'embed du panel ticket (réutilisable)"""
     e = discord.Embed(
         title="🌸  Kozakura — Support & Contact",
         description=(
@@ -2542,10 +2566,20 @@ async def ticketpanel(ctx):
         ),
         color=discord.Color.from_rgb(255, 182, 193)
     )
-    if ctx.guild.icon:
-        e.set_thumbnail(url=ctx.guild.icon.url)
+    if guild.icon:
+        e.set_thumbnail(url=guild.icon.url)
     e.set_footer(text="Kozakura Support  •  Cliquez sur un bouton ci-dessous")
-    await ctx.send(embed=e, view=TicketPanelView())
+    return e
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def ticketpanel(ctx):
+    """Envoie le panel de tickets avec les 4 boutons"""
+    e = _build_ticket_panel_embed(ctx.guild)
+    msg = await ctx.send(embed=e, view=TicketPanelView())
+    # Mémoriser l'ID du message et du salon pour auto-restore au redémarrage
+    set_cfg(ctx.guild.id, "ticket_panel_channel", ctx.channel.id)
+    set_cfg(ctx.guild.id, "ticket_panel_message", msg.id)
     try: await ctx.message.delete()
     except Exception: pass
 
