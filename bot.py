@@ -321,6 +321,11 @@ NUKE_EXEMPT_ROLES = ("kozakura", "kozakura C.O.D", "Co Propriétaire", "Dévelop
 PROTECTED_ROLES = ("Développer",)
 ROLE_CROWN = "kozakura"  # Seul ce rôle peut toucher les rôles protégés
 
+# Anti-ping : ces utilisateurs ne peuvent pas être mentionnés / leur pseudo écrit
+ANTI_PING_USERS = {
+    777495590049021972: ["louis", "louisl", "louismph8"],  # pseudo(s) à surveiller (minuscules)
+}
+
 # ─── UTILITAIRES ──────────────────────────────────────────────────────────────
 def xp_for_level(lvl): return int(100 * (lvl ** 1.5))
 
@@ -659,6 +664,45 @@ async def on_message(message):
     if message.author.bot or not message.guild: return
     guild = message.guild; author = message.author
     uid = str(author.id); gid = str(guild.id); now = time.time()
+
+    # ── Anti-ping / anti-mention utilisateurs protégés ───────────────────────
+    for protected_id, pseudos in ANTI_PING_USERS.items():
+        if author.id == protected_id:
+            break  # La personne protégée peut écrire son propre nom
+        triggered = False
+        # Vérifier mention directe (<@ID>)
+        if any(u.id == protected_id for u in message.mentions):
+            triggered = True
+        # Vérifier pseudo écrit dans le message
+        content_low = message.content.lower()
+        if not triggered and any(p in content_low for p in pseudos):
+            triggered = True
+        if triggered:
+            try:
+                await message.delete()
+            except Exception:
+                pass
+            protected_member = guild.get_member(protected_id)
+            warn_txt = (
+                f"⛔ {author.mention} Tu n'es pas autorisé(e) à mentionner ou écrire le nom de cette personne."
+            )
+            try:
+                warn_msg = await message.channel.send(warn_txt, delete_after=6)
+            except Exception:
+                pass
+            # Log sécurité
+            e_ap = discord.Embed(
+                title="🔕 Anti-Ping Déclenché",
+                description=f"{author.mention} a tenté de mentionner une personne protégée.",
+                color=discord.Color.dark_red(),
+                timestamp=datetime.utcnow()
+            )
+            e_ap.add_field(name="👤 Auteur",   value=f"{author} (`{author.id}`)", inline=True)
+            e_ap.add_field(name="📌 Salon",    value=message.channel.mention, inline=True)
+            e_ap.add_field(name="💬 Message",  value=message.content[:300] or "*(vide)*", inline=False)
+            e_ap.set_footer(text="Kozakura Security • Anti-Ping")
+            await log_security(guild, e_ap)
+            return  # Ne pas traiter le reste du message
 
     # Log photos/fichiers envoyés
     if message.attachments:
