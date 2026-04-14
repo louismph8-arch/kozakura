@@ -3844,20 +3844,11 @@ async def _sanction_voc_actor(guild, actor, victim, action_type: str):
                 await actor_member.remove_roles(*roles_to_strip, reason=f"🔒 Protection voc — {action_type}")
         except Exception:
             pass
-        # Ban (pour éviter qu'il revienne recommencer)
+        # Kick
         try:
-            await actor_member.ban(reason=f"🔒 PROTECTION MAX VOC — {action_type}", delete_message_days=0)
+            await actor_member.kick(reason=f"🔒 Protection voc — {action_type}")
         except Exception:
-            # Si ban impossible, timeout + kick
-            try:
-                until = datetime.utcnow() + timedelta(days=28)
-                await actor_member.timeout(until, reason=f"🔒 Protection voc — {action_type}")
-            except Exception:
-                pass
-            try:
-                await actor_member.kick(reason=f"🔒 Protection voc — {action_type}")
-            except Exception:
-                pass
+            pass
 
     e = discord.Embed(
         title="🚨 PROTECTION VOC — ACTION BLOQUÉE",
@@ -3868,7 +3859,7 @@ async def _sanction_voc_actor(guild, actor, victim, action_type: str):
     e.add_field(name="🎯 Victime",           value=f"{victim.mention} (`{victim.id}`)", inline=True)
     e.add_field(name="⚠️ Responsable",       value=f"{actor.mention} (`{actor.id}`)", inline=True)
     e.add_field(name="⚡ Action tentée",     value=action_type.capitalize(), inline=False)
-    e.add_field(name="✅ Sanctions",         value="Rôles retirés • **Ban permanent**", inline=False)
+    e.add_field(name="✅ Sanctions",         value="Rôles retirés • Kick", inline=False)
     e.set_footer(text="Kozakura Security MAX • Protection vocale")
     await log_security(guild, e)
 
