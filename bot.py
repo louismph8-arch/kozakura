@@ -3864,40 +3864,32 @@ async def on_voice_state_update(member, before, after):
     # ── PROTECTION VOC utilisateur protégé ────────────────────────────────────
     if member.id in ANTI_PING_USERS:
 
-        # ── Déconnexion forcée ──────────────────────────────────────────────
-        # Déco volontaire → aucune entrée member_disconnect dans l'audit log
-        # Déco forcée → entrée member_disconnect créée par le modérateur
-        if before.channel is not None and after.channel is None:
-            await asyncio.sleep(1.0)  # laisser le temps à Discord de créer l'entrée
-            actor = None
-            try:
-                async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.member_disconnect):
-                    age = (datetime.utcnow() - entry.created_at.replace(tzinfo=None)).total_seconds()
-                    if age < 8 and entry.user.id != guild.me.id and entry.user.id != member.id:
-                        actor = entry.user
-                        break
-            except Exception:
-                pass
+        async def _find_voc_actor(audit_action, window=10):
+            """Cherche l'auteur d'une action dans l'audit log avec retry."""
+            for _ in range(3):   # 3 tentatives
+                await asyncio.sleep(0.8)
+                try:
+                    now_dt = discord.utils.utcnow()
+                    async for entry in guild.audit_logs(limit=10, action=audit_action):
+                        age = (now_dt - entry.created_at).total_seconds()
+                        if age > window:
+                            break
+                        if entry.user.id != guild.me.id and entry.user.id != member.id:
+                            return entry.user
+                except Exception:
+                    pass
+            return None
 
+        # ── Déconnexion forcée ──────────────────────────────────────────────
+        if before.channel is not None and after.channel is None:
+            actor = await _find_voc_actor(discord.AuditLogAction.member_disconnect)
             if actor:
-                # Note : Discord API interdit de force-rejoindre quelqu'un sans qu'il soit déjà en vocal
-                # On sanctionne immédiatement l'auteur
                 await _sanction_voc_actor(guild, actor, member, "déconnexion forcée du vocal")
                 return
 
         # ── Mute serveur forcé ──────────────────────────────────────────────
         if not before.mute and after.mute:
-            await asyncio.sleep(0.5)
-            actor = None
-            try:
-                async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.member_update):
-                    age = (datetime.utcnow() - entry.created_at.replace(tzinfo=None)).total_seconds()
-                    if age < 5 and entry.user.id != guild.me.id and entry.user.id != member.id:
-                        actor = entry.user
-                    break
-            except Exception:
-                pass
-
+            actor = await _find_voc_actor(discord.AuditLogAction.member_update)
             if actor:
                 try:
                     await member.edit(mute=False, reason="🔒 Protection voc — unmute automatique")
@@ -3908,17 +3900,7 @@ async def on_voice_state_update(member, before, after):
 
         # ── Sourd serveur forcé ─────────────────────────────────────────────
         if not before.deaf and after.deaf:
-            await asyncio.sleep(0.5)
-            actor = None
-            try:
-                async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.member_update):
-                    age = (datetime.utcnow() - entry.created_at.replace(tzinfo=None)).total_seconds()
-                    if age < 5 and entry.user.id != guild.me.id and entry.user.id != member.id:
-                        actor = entry.user
-                    break
-            except Exception:
-                pass
-
+            actor = await _find_voc_actor(discord.AuditLogAction.member_update)
             if actor:
                 try:
                     await member.edit(deafen=False, reason="🔒 Protection voc — undeafen automatique")
@@ -3943,16 +3925,22 @@ async def on_voice_state_update(member, before, after):
             audit_action = None
 
         if action_done:
-            await asyncio.sleep(1.0)
             actor = None
-            try:
-                async for entry in guild.audit_logs(limit=5, action=audit_action):
-                    age = (datetime.utcnow() - entry.created_at.replace(tzinfo=None)).total_seconds()
-                    if age < 8 and entry.user.id != guild.me.id and entry.user.id != member.id:
-                        actor = entry.user
-                        break
-            except Exception:
-                pass
+            for _ in range(3):
+                await asyncio.sleep(0.8)
+                try:
+                    now_dt = discord.utils.utcnow()
+                    async for entry in guild.audit_logs(limit=10, action=audit_action):
+                        age = (now_dt - entry.created_at).total_seconds()
+                        if age > 10:
+                            break
+                        if entry.user.id != guild.me.id and entry.user.id != member.id:
+                            actor = entry.user
+                            break
+                except Exception:
+                    pass
+                if actor:
+                    break
 
             if actor:
                 actor_member = guild.get_member(actor.id)
