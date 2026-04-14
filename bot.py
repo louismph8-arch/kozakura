@@ -133,7 +133,8 @@ starboard_db   = load_json("starboard.json", {})    # {guild_id: {message_id: st
 afk_db         = load_json("afk.json", {})          # {guild_id: {user_id: {reason, since}}}
 birthdays_db   = load_json("birthdays.json", {})    # {guild_id: {user_id: "DD/MM"}}
 tempbans_db    = load_json("tempbans.json", {})      # {guild_id: {user_id: {unban_at, reason}}}
-streaks_db     = load_json("streaks.json", {})       # {guild_id: {user_id: {last_date, streak}}}      # {guild_id: [{reporter, target, reason, date}]}
+streaks_db     = load_json("streaks.json", {})       # {guild_id: {user_id: {last_date, streak}}}
+ticket_stats_db = load_json("ticket_stats.json", {}) # {guild_id: {user_id: {claims, closes, last_activity}}}
 
 # ─── VARIABLES EN MÉMOIRE ─────────────────────────────────────────────────────
 message_tracker  = defaultdict(list)
@@ -1337,10 +1338,19 @@ async def log_sanction(guild, member, type_sanction, reason, moderator, extra=""
     return e
 
 # ─── RÔLES AUTORISÉS POUR LES SANCTIONS ──────────────────────────────────────
-ROLES_BAN  = ("kozakura", "kozakura C.O.D", "Co Propriétaire", "Développer", "Royal", "Chef Gestion", "[+] Kozakura gestion", "A. Kozakura")
-ROLES_KICK = ("kozakura", "kozakura C.O.D", "Co Propriétaire", "Développer", "Royal", "Chef Gestion", "[+] Kozakura gestion", "A. Kozakura")
-ROLES_MUTE = ["kozakura", "kozakura C.O.D", "Co Propriétaire", "Développer", "Royal", "Chef Gestion", "[+] Kozakura gestion", "A. Kozakura", "Gestion Staff", "Gestion Modérations", "Gestion Abus", "Gestion"]
-ROLES_WARN = ["kozakura", "kozakura C.O.D", "Co Propriétaire", "Développer", "Royal", "Chef Gestion", "[+] Kozakura gestion", "A. Kozakura", "Gestion Staff", "Gestion Modérations", "Gestion Abus", "Gestion"]
+ROLES_BAN  = ("kozakura", "kozakura C.O.D", "Co Propriétaire", "Développer", "Royal", "Inspecteur", "Chef Gestion", "[+] Kozakura gestion", "A. Kozakura")
+ROLES_KICK = ("kozakura", "kozakura C.O.D", "Co Propriétaire", "Développer", "Royal", "Inspecteur", "Chef Gestion", "[+] Kozakura gestion", "A. Kozakura")
+ROLES_MUTE = ["kozakura", "kozakura C.O.D", "Co Propriétaire", "Développer", "Royal", "Inspecteur", "Chef Gestion", "[+] Kozakura gestion", "A. Kozakura", "Gestion Staff", "Gestion Modérations", "Gestion Abus", "Gestion"]
+ROLES_WARN = ["kozakura", "kozakura C.O.D", "Co Propriétaire", "Développer", "Royal", "Inspecteur", "Chef Gestion", "[+] Kozakura gestion", "A. Kozakura", "Gestion Staff", "Gestion Modérations", "Gestion Abus", "Gestion"]
+
+# Rôles autorisés pour le tribunal (Inspecteur + grades supérieurs)
+ROLES_TRIBUNAL = ("kozakura", "kozakura C.O.D", "Co Propriétaire", "Développer", "Royal", "Inspecteur", "Chef Gestion", "[+] Kozakura gestion")
+
+# Rôles autorisés pour rankup/derank (Gestion Modérations inclus, avec restriction hiérarchique)
+ROLES_RANKDERANK = ("kozakura", "kozakura C.O.D", "Co Propriétaire", "Développer", "Royal", "Chef Gestion", "[+] Kozakura gestion", "A. Kozakura", "Gestion Modérations")
+
+# Mass ban : uniquement Développer et kozakura C.O.D
+ROLES_MASSBAN = ("kozakura", "kozakura C.O.D", "Développer")
 
 def has_sanction_role(member, roles_list):
     """Vérifie si le membre a l'un des rôles autorisés"""
@@ -2222,6 +2232,73 @@ TICKET_PRIORITY_EMOJI = {
     "urgent": "🔴", "haute": "🟠", "normale": "🔵", "basse": "🟢",
 }
 
+def _track_ticket_stat(gid: str, uid: str, stat: str):
+    """Enregistre une action tickets (claims/closes) pour le système On Top."""
+    now = int(time.time())
+    entry = ticket_stats_db.setdefault(gid, {}).setdefault(uid, {"claims": 0, "closes": 0, "last_activity": now})
+    entry[stat] = entry.get(stat, 0) + 1
+    entry["last_activity"] = now
+    save_json("ticket_stats.json", ticket_stats_db)
+
+# ─── ON TOP : tâche de fond ────────────────────────────────────────────────────
+ON_TOP_ROLE_NAME   = "On Top"
+ON_TOP_WINDOW_DAYS = 7    # Période prise en compte (7 jours)
+ON_TOP_MIN_ACTIONS = 3    # Minimum d'actions pour garder le rôle
+
+@tasks.loop(hours=6)
+async def check_on_top():
+    """Donne le rôle 'On Top' au staff le plus actif sur les tickets — retire si inactif."""
+    now = int(time.time())
+    cutoff = now - (ON_TOP_WINDOW_DAYS * 86400)
+
+    for guild in bot.guilds:
+        gid = str(guild.id)
+        on_top_role = discord.utils.get(guild.roles, name=ON_TOP_ROLE_NAME)
+        if not on_top_role:
+            continue
+
+        stats = ticket_stats_db.get(gid, {})
+        # Calculer le score de chaque membre (claims + closes) dans la fenêtre
+        scores = {}
+        for uid, data in stats.items():
+            if data.get("last_activity", 0) >= cutoff:
+                scores[uid] = data.get("claims", 0) + data.get("closes", 0)
+
+        # Retirer le rôle à tous ceux qui l'ont mais ne méritent plus
+        for member in on_top_role.members:
+            uid = str(member.id)
+            score = scores.get(uid, 0)
+            if score < ON_TOP_MIN_ACTIONS:
+                try:
+                    await member.remove_roles(on_top_role, reason="🏆 On Top retiré — activité ticket insuffisante")
+                except Exception:
+                    pass
+
+        if not scores:
+            continue
+
+        # Trouver le meilleur
+        best_uid = max(scores, key=lambda u: scores[u])
+        best_score = scores[best_uid]
+        if best_score < ON_TOP_MIN_ACTIONS:
+            continue
+
+        best_member = guild.get_member(int(best_uid))
+        if not best_member:
+            continue
+
+        # Donner le rôle si pas déjà attribué
+        if on_top_role not in best_member.roles:
+            try:
+                await best_member.add_roles(on_top_role, reason=f"🏆 On Top — {best_score} actions tickets")
+            except Exception:
+                pass
+
+@bot.listen("on_ready")
+async def start_on_top_checker():
+    if not check_on_top.is_running():
+        check_on_top.start()
+
 async def log_ticket(guild, embed):
     ch_id = get_cfg(guild.id, "ticket_log_channel")
     if ch_id:
@@ -2532,6 +2609,8 @@ class TicketControlView(discord.ui.View):
         else:
             tickets_db[gid][tid]["claimed_by"] = interaction.user.id
             save_json("tickets.json", tickets_db)
+            # Tracker les stats pour le rôle On Top
+            _track_ticket_stat(gid, str(interaction.user.id), "claims")
             e = discord.Embed(title="✋ Ticket Claim",
                 description=f"{interaction.user.mention} a pris en charge ce ticket.",
                 color=discord.Color.green(), timestamp=datetime.utcnow())
@@ -2592,6 +2671,8 @@ class CloseTicketModal(discord.ui.Modal, title="🔒 Fermer le ticket"):
         tickets_db[gid][tid]["closed_at"]    = str(datetime.utcnow())
         tickets_db[gid][tid]["close_reason"] = reason_text
         save_json("tickets.json", tickets_db)
+        # Tracker les stats pour le rôle On Top
+        _track_ticket_stat(gid, str(interaction.user.id), "closes")
 
         e = discord.Embed(
             title="🔒  Ticket Fermé",
@@ -3295,9 +3376,14 @@ async def log_rankderank(guild, embed):
     if ch: await ch.send(embed=embed)
 
 @bot.command(name="rankup")
-@commands.has_permissions(manage_roles=True)
 async def rank_up(ctx, member: discord.Member, *, reason: str = "Aucune raison"):
     """!rankup @membre [raison] — Monte le membre d'un rang"""
+    if not has_sanction_role(ctx.author, ROLES_RANKDERANK):
+        return await ctx.send("❌ Tu n'as pas la permission de gérer les rangs.", delete_after=5)
+    # Gestion Modérations : restriction hiérarchique (ne peut pas rank quelqu'un au-dessus ou égal)
+    if has_sanction_role(ctx.author, ["Gestion Modérations"]) and not has_sanction_role(ctx.author, ROLES_BAN):
+        if member.top_role >= ctx.author.top_role:
+            return await ctx.send("❌ Tu ne peux pas modifier le rang d'un membre avec un rôle supérieur ou égal au tien.", delete_after=5)
     guild = ctx.guild
     rang  = get_rang_actuel(member)
 
@@ -3359,9 +3445,14 @@ async def rank_up(ctx, member: discord.Member, *, reason: str = "Aucune raison")
         color=discord.Color.green())
 
 @bot.command(name="derank")
-@commands.has_permissions(manage_roles=True)
 async def derank_down(ctx, member: discord.Member, *, reason: str = "Aucune raison"):
     """!derank @membre [raison] — Rétrograde le membre d'un rang"""
+    if not has_sanction_role(ctx.author, ROLES_RANKDERANK):
+        return await ctx.send("❌ Tu n'as pas la permission de gérer les rangs.", delete_after=5)
+    # Gestion Modérations : restriction hiérarchique
+    if has_sanction_role(ctx.author, ["Gestion Modérations"]) and not has_sanction_role(ctx.author, ROLES_BAN):
+        if member.top_role >= ctx.author.top_role:
+            return await ctx.send("❌ Tu ne peux pas modifier le rang d'un membre avec un rôle supérieur ou égal au tien.", delete_after=5)
     guild = ctx.guild
     rang  = get_rang_actuel(member)
 
@@ -5366,9 +5457,10 @@ async def massban(ctx, members: commands.Greedy[discord.Member], *, reason: str 
     """
     !massban @user1 @user2 @user3 [raison]
     Prépare un mass ban — à confirmer avec !massbanconfirm
+    Réservé aux rôles Développer et kozakura C.O.D uniquement.
     """
-    if not has_sanction_role(ctx.author, ROLES_BAN):
-        return await ctx.send("❌ Tu n'as pas la permission de bannir.", delete_after=5)
+    if not has_sanction_role(ctx.author, ROLES_MASSBAN):
+        return await ctx.send("❌ Seuls les **kozakura C.O.D** et **Développer** peuvent utiliser le mass ban.", delete_after=5)
 
     if not members:
         return await ctx.send(
@@ -5402,8 +5494,8 @@ async def massban(ctx, members: commands.Greedy[discord.Member], *, reason: str 
 @bot.command()
 async def massbanconfirm(ctx):
     """!massbanconfirm — Exécute le mass ban préparé"""
-    if not has_sanction_role(ctx.author, ROLES_BAN):
-        return await ctx.send("❌ Tu n'as pas la permission de bannir.", delete_after=5)
+    if not has_sanction_role(ctx.author, ROLES_MASSBAN):
+        return await ctx.send("❌ Seuls les **kozakura C.O.D** et **Développer** peuvent confirmer le mass ban.", delete_after=5)
 
     gid = str(ctx.guild.id)
     if gid not in massban_queue:
@@ -5885,10 +5977,9 @@ async def tribunal(ctx, accused: discord.Member, vote_type: str = "ban", *, moti
     !tribunal @membre [ban/kick/mute] [motif]
     Nécessite le rôle 'Gestion'
     """
-    # Vérif rôle juge
-    juge_role = discord.utils.get(ctx.guild.roles, name=ROLE_JUGE)
-    if juge_role and juge_role not in ctx.author.roles:
-        return await ctx.send(f"❌ Seuls les membres avec le rôle **{ROLE_JUGE}** peuvent ouvrir un tribunal.")
+    # Vérif rôle juge (Inspecteur + grades supérieurs)
+    if not has_sanction_role(ctx.author, ROLES_TRIBUNAL):
+        return await ctx.send("❌ Seuls les **Inspecteur**, **Chef Gestion** et grades supérieurs peuvent ouvrir un tribunal.")
 
     # Vérif type de vote
     vote_type = vote_type.lower()
