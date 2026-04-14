@@ -4154,11 +4154,125 @@ async def on_guild_channel_create(channel):
 
 @bot.event
 async def on_guild_role_delete(role):
-    """Détecte la suppression massive de rôles"""
+    """Détecte la suppression massive de rôles + protection rôles protégés"""
     guild = role.guild
+
+    # ── PROTECTION MAX : rôle protégé supprimé ───────────────────────────────
+    if role.name in PROTECTED_ROLES:
+        await asyncio.sleep(0.3)
+        actor = None
+        try:
+            async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.role_delete):
+                actor = entry.user
+                break
+        except Exception:
+            pass
+
+        crown_role     = discord.utils.get(guild.roles, name=ROLE_CROWN)
+        actor_is_crown = crown_role and actor and crown_role in actor.roles
+        actor_is_bot   = actor and actor.id == guild.me.id
+
+        if not actor_is_crown and not actor_is_bot and actor:
+            actor_member = guild.get_member(actor.id)
+            if actor_member:
+                try:
+                    roles_to_strip = [r for r in actor_member.roles if r.name != "@everyone"]
+                    if roles_to_strip:
+                        await actor_member.remove_roles(*roles_to_strip, reason="🔒 PROTECTION MAX — suppression rôle protégé")
+                except Exception:
+                    pass
+                try:
+                    until = datetime.utcnow() + timedelta(days=28)
+                    await actor_member.timeout(until, reason="🔒 PROTECTION MAX — suppression rôle protégé")
+                except Exception:
+                    pass
+                try:
+                    await actor_member.kick(reason="🔒 PROTECTION MAX — suppression rôle protégé")
+                except Exception:
+                    pass
+
+        e = discord.Embed(
+            title="🚨 ALERTE MAX — RÔLE PROTÉGÉ SUPPRIMÉ",
+            description=f"⛔ Le rôle protégé **{role.name}** a été **supprimé** ! Recréez-le immédiatement.",
+            color=discord.Color.dark_red(),
+            timestamp=datetime.utcnow()
+        )
+        e.add_field(name="🎭 Rôle supprimé", value=f"**{role.name}**", inline=True)
+        e.add_field(name="⚠️ Responsable",   value=actor.mention if actor else "Inconnu", inline=True)
+        if actor and not actor_is_crown:
+            e.add_field(name="⚡ Sanctions",  value="✅ Tous rôles retirés\n✅ Timeout 28j\n✅ Kick", inline=False)
+        e.set_footer(text="Kozakura Security MAX • Action immédiate requise")
+        await log_security(guild, e)
+        return
+
     async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.role_delete):
         if entry.user and not entry.user.bot:
             await nuke_action(guild, entry.user, f"Suppression rôle : @{role.name}")
+
+
+@bot.event
+async def on_guild_role_update(before, after):
+    """PROTECTION MAX — empêche toute modification des permissions d'un rôle protégé"""
+    if before.name not in PROTECTED_ROLES:
+        return
+    guild = after.guild
+    await asyncio.sleep(0.3)
+    actor = None
+    try:
+        async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.role_update):
+            actor = entry.user
+            break
+    except Exception:
+        pass
+
+    crown_role     = discord.utils.get(guild.roles, name=ROLE_CROWN)
+    actor_is_crown = crown_role and actor and crown_role in actor.roles
+    actor_is_bot   = actor and actor.id == guild.me.id
+
+    if not actor_is_crown and not actor_is_bot:
+        # Revert les permissions du rôle à l'état d'avant
+        try:
+            await after.edit(
+                permissions=before.permissions,
+                name=before.name,
+                color=before.color,
+                hoist=before.hoist,
+                mentionable=before.mentionable,
+                reason="🔒 PROTECTION MAX — modification rôle protégé annulée"
+            )
+        except Exception:
+            pass
+
+        if actor:
+            actor_member = guild.get_member(actor.id)
+            if actor_member:
+                try:
+                    roles_to_strip = [r for r in actor_member.roles if r.name != "@everyone"]
+                    if roles_to_strip:
+                        await actor_member.remove_roles(*roles_to_strip, reason="🔒 PROTECTION MAX")
+                except Exception:
+                    pass
+                try:
+                    until = datetime.utcnow() + timedelta(days=28)
+                    await actor_member.timeout(until, reason="🔒 PROTECTION MAX — modification rôle protégé")
+                except Exception:
+                    pass
+                try:
+                    await actor_member.kick(reason="🔒 PROTECTION MAX — modification rôle protégé")
+                except Exception:
+                    pass
+
+        e = discord.Embed(
+            title="🚨 PROTECTION MAX — MODIFICATION RÔLE PROTÉGÉ",
+            description=f"⛔ Tentative de modification du rôle **{before.name}** **annulée et sanctionnée**.",
+            color=discord.Color.dark_red(),
+            timestamp=datetime.utcnow()
+        )
+        e.add_field(name="🎭 Rôle ciblé",    value=f"**{before.name}**", inline=True)
+        e.add_field(name="⚠️ Responsable",   value=actor.mention if actor else "Inconnu", inline=True)
+        e.add_field(name="⚡ Sanctions",      value="✅ Rôle rétabli\n✅ Tous rôles retirés\n✅ Timeout 28j\n✅ Kick", inline=False)
+        e.set_footer(text="Kozakura Security MAX")
+        await log_security(guild, e)
 
 @bot.event
 async def on_member_ban(guild, user):
@@ -4241,46 +4355,73 @@ async def on_member_update(before, after):
     added_roles   = [r for r in after.roles if r not in before.roles]
     removed_roles = [r for r in before.roles if r not in after.roles]
 
-    # ── Protection rôles protégés (ex: Développer) ───────────────────────────
+    # ── PROTECTION MAXIMALE — Rôles protégés (ex: Développer) ──────────────────
     changed_protected = [r for r in added_roles + removed_roles if r.name in PROTECTED_ROLES]
     if changed_protected:
-        await asyncio.sleep(0.5)
-        # Trouver qui a fait la modification
-        moderator = None
+        await asyncio.sleep(0.3)
+        actor = None
         try:
             async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.member_role_update):
-                moderator = entry.user
+                actor = entry.user
                 break
         except Exception:
             pass
 
-        # Si ce n'est pas la couronne ni le bot lui-même → annuler
-        crown_role = discord.utils.get(guild.roles, name=ROLE_CROWN)
-        actor_has_crown = crown_role and moderator and crown_role in moderator.roles
-        actor_is_bot = moderator and moderator.id == guild.me.id
+        crown_role   = discord.utils.get(guild.roles, name=ROLE_CROWN)
+        actor_is_crown = crown_role and actor and crown_role in actor.roles
+        actor_is_bot   = actor and actor.id == guild.me.id
 
-        if not actor_has_crown and not actor_is_bot:
-            # Rétablir les rôles protégés à leur état d'avant
+        if not actor_is_crown and not actor_is_bot:
+            # 1️⃣ Revert immédiat
             for role in changed_protected:
                 try:
                     if role in added_roles:
-                        await after.remove_roles(role, reason="🔒 Rôle protégé — annulation automatique")
+                        await after.remove_roles(role, reason="🔒 PROTECTION MAX — annulation")
                     else:
-                        await after.add_roles(role, reason="🔒 Rôle protégé — annulation automatique")
+                        await after.add_roles(role, reason="🔒 PROTECTION MAX — annulation")
                 except Exception:
                     pass
 
+            # 2️⃣ Retirer TOUS les rôles de l'acteur (sauf @everyone)
+            if actor:
+                actor_member = guild.get_member(actor.id)
+                if actor_member:
+                    try:
+                        roles_to_strip = [r for r in actor_member.roles if r.name != "@everyone"]
+                        if roles_to_strip:
+                            await actor_member.remove_roles(*roles_to_strip, reason="🔒 PROTECTION MAX — tentative sur rôle protégé")
+                    except Exception:
+                        pass
+
+                    # 3️⃣ Timeout 28 jours (maximum Discord)
+                    try:
+                        until = datetime.utcnow() + timedelta(days=28)
+                        await actor_member.timeout(until, reason="🔒 PROTECTION MAX — tentative sur rôle protégé")
+                    except Exception:
+                        pass
+
+                    # 4️⃣ Kick
+                    try:
+                        await actor_member.kick(reason="🔒 PROTECTION MAX — tentative de modification d'un rôle protégé")
+                    except Exception:
+                        pass
+
+            # 5️⃣ Alerte sécurité maximale
             e = discord.Embed(
-                title="🔒 Rôle Protégé — Action Annulée",
-                description=f"Une modification non autorisée sur un rôle protégé a été **annulée automatiquement**.",
+                title="🚨 PROTECTION MAXIMALE — RÔLE PROTÉGÉ",
+                description=(
+                    f"⛔ **Tentative non autorisée détectée et neutralisée.**\n"
+                    f"Seul le rôle **{ROLE_CROWN}** peut modifier les rôles protégés."
+                ),
                 color=discord.Color.dark_red(),
                 timestamp=datetime.utcnow()
             )
-            e.add_field(name="🎭 Rôle(s) concerné(s)", value=", ".join(f"**{r.name}**" for r in changed_protected), inline=False)
-            e.add_field(name="👤 Membre ciblé", value=f"{after.mention} (`{after.id}`)", inline=True)
-            e.add_field(name="⚠️ Action tentée par", value=moderator.mention if moderator else "Inconnu", inline=True)
-            e.add_field(name="👑 Seul autorisé", value=f"Rôle **{ROLE_CROWN}**", inline=False)
-            e.set_footer(text="Kozakura Security • Protection automatique")
+            e.add_field(name="🎭 Rôle(s) visé(s)",    value=", ".join(f"**{r.name}**" for r in changed_protected), inline=False)
+            e.add_field(name="👤 Membre ciblé",         value=f"{after.mention} (`{after.id}`)", inline=True)
+            e.add_field(name="⚠️ Responsable",          value=actor.mention if actor else "Inconnu", inline=True)
+            e.add_field(name="⚡ Sanctions appliquées", value="✅ Revert\n✅ Tous rôles retirés\n✅ Timeout 28j\n✅ Kick", inline=False)
+            e.set_thumbnail(url=actor.display_avatar.url if actor else guild.me.display_avatar.url)
+            e.set_footer(text="Kozakura Security MAX • Protection automatique")
             await log_security(guild, e)
             return
 
