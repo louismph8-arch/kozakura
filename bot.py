@@ -1501,6 +1501,16 @@ def has_sanction_role(member, roles_list):
     member_roles = [r.name for r in member.roles]
     return any(r in member_roles for r in roles_list)
 
+def staff_only(roles=None):
+    """Décorateur custom : vérifie que l'auteur a un rôle staff (ROLES_WARN par défaut)"""
+    async def predicate(ctx):
+        r = roles if roles is not None else ROLES_WARN
+        if has_sanction_role(ctx.author, r):
+            return True
+        await ctx.send("❌ Tu n'as pas la permission d'utiliser cette commande.", delete_after=5)
+        return False
+    return commands.check(predicate)
+
 # ─── MODÉRATION ───────────────────────────────────────────────────────────────
 @bot.command()
 async def ban(ctx, member: discord.Member = None, *, reason="Aucune raison"):
@@ -1605,7 +1615,7 @@ async def unmute(ctx, member: discord.Member):
     await ctx.send(embed=e)
 
 @bot.command()
-@commands.has_permissions(manage_messages=True)
+@staff_only()
 async def purge(ctx, amount: int):
     deleted = await ctx.channel.purge(limit=amount + 1)
     count = len(deleted) - 1
@@ -1615,7 +1625,7 @@ async def purge(ctx, amount: int):
     await ctx.send(f"✅ {count} messages supprimés.", delete_after=5)
 
 @bot.command()
-@commands.has_permissions(manage_messages=True)
+@staff_only()
 async def clear(ctx, amount_or_member=None, amount: int = 10):
     """
     !clear [nombre]           — Supprime les X derniers messages
@@ -1678,7 +1688,7 @@ async def clear(ctx, amount_or_member=None, amount: int = 10):
 
 
 @bot.command()
-@commands.has_permissions(manage_channels=True)
+@staff_only()
 async def slowmode(ctx, seconds: int):
     await ctx.channel.edit(slowmode_delay=seconds)
     status = f"**{seconds}s**" if seconds > 0 else "**désactivé**"
@@ -1757,7 +1767,7 @@ async def warnings(ctx, member: discord.Member = None):
     await ctx.send(embed=e)
 
 @bot.command()
-@commands.has_permissions(kick_members=True)
+@staff_only()
 async def clearwarns(ctx, member: discord.Member):
     gid = str(ctx.guild.id); uid = str(member.id)
     if gid in warnings_db: warnings_db[gid][uid] = []
@@ -1766,7 +1776,7 @@ async def clearwarns(ctx, member: discord.Member):
 
 # ─── INFOSANCTION ─────────────────────────────────────────────────────────────
 @bot.command()
-@commands.has_permissions(kick_members=True)
+@staff_only()
 async def infosanction(ctx, member: discord.Member):
     """!infosanction @membre — Affiche toutes les sanctions d'un membre"""
     gid  = str(ctx.guild.id)
@@ -2292,7 +2302,7 @@ async def listnsfw(ctx):
     await ctx.send(embed=e)
 
 @bot.command()
-@commands.has_permissions(kick_members=True)
+@staff_only()
 async def sanctions(ctx, member: discord.Member):
     """!sanctions @membre — Voir le niveau de sanction actuel (warns)"""
     gid = str(ctx.guild.id); uid = str(member.id)
@@ -2873,7 +2883,7 @@ class CloseTicketModal(discord.ui.Modal, title="🔒 Fermer le ticket"):
         except Exception: pass
 
 @bot.command(name="setpriority")
-@commands.has_permissions(kick_members=True)
+@staff_only()
 async def setpriority(ctx, niveau: str = None):
     """!setpriority [urgent/haute/normale/basse] — Définit la priorité du ticket"""
     gid = str(ctx.guild.id); tid = str(ctx.channel.id)
@@ -2894,7 +2904,7 @@ async def setpriority(ctx, niveau: str = None):
     await ctx.channel.edit(name=f"{niveau}-{ctx.channel.name.split('-', 1)[-1] if '-' in ctx.channel.name else ctx.channel.name}")
 
 @bot.command(name="reopen")
-@commands.has_permissions(kick_members=True)
+@staff_only()
 async def reopen_ticket(ctx):
     """!reopen — Rouvre un ticket fermé"""
     gid = str(ctx.guild.id); tid = str(ctx.channel.id)
@@ -2917,7 +2927,7 @@ async def reopen_ticket(ctx):
     await log_ticket(ctx.guild, e)
 
 @bot.command()
-@commands.has_permissions(kick_members=True)
+@staff_only()
 async def claim(ctx):
     """!claim — Prend en charge le ticket actuel"""
     gid = str(ctx.guild.id); tid = str(ctx.channel.id)
@@ -2943,7 +2953,7 @@ async def claim(ctx):
     await log_ticket(ctx.guild, le)
 
 @bot.command(name="add")
-@commands.has_permissions(kick_members=True)
+@staff_only()
 async def ticket_add(ctx, member: discord.Member):
     """!add @membre — Ajoute un membre au ticket actuel"""
     gid = str(ctx.guild.id); tid = str(ctx.channel.id)
@@ -2969,7 +2979,7 @@ async def ticket_add(ctx, member: discord.Member):
     await log_ticket(ctx.guild, le)
 
 @bot.command(name="remove")
-@commands.has_permissions(kick_members=True)
+@staff_only()
 async def ticket_remove(ctx, member: discord.Member):
     """!remove @membre — Retire un membre du ticket actuel"""
     gid = str(ctx.guild.id); tid = str(ctx.channel.id)
@@ -2999,7 +3009,7 @@ async def ticket_remove(ctx, member: discord.Member):
     await log_ticket(ctx.guild, le)
 
 @bot.command()
-@commands.has_permissions(kick_members=True)
+@staff_only()
 async def closeticket(ctx, *, reason="Aucune raison"):
     """!closeticket [raison] — Ferme le ticket actuel"""
     gid = str(ctx.guild.id); tid = str(ctx.channel.id)
@@ -3036,7 +3046,7 @@ async def closeticket(ctx, *, reason="Aucune raison"):
     except Exception: pass
 
 @bot.command(name="tickets")
-@commands.has_permissions(kick_members=True)
+@staff_only()
 async def list_tickets(ctx):
     """!tickets — Liste tous les tickets ouverts"""
     gid = str(ctx.guild.id)
@@ -3698,7 +3708,7 @@ async def derank_down(ctx, member: discord.Member, *, reason: str = "Aucune rais
         color=discord.Color.red())
 
 @bot.command(name="setrank")
-@commands.has_permissions(manage_roles=True)
+@staff_only(list(ROLES_RANKDERANK))
 async def set_rank(ctx, member: discord.Member, rang_num: int, *, reason: str = "Aucune raison"):
     """!setrank @membre [1-6] [raison] — Définit directement le rang (1=***, 6=I)"""
     guild = ctx.guild
@@ -3751,7 +3761,7 @@ async def set_rank(ctx, member: discord.Member, rang_num: int, *, reason: str = 
         color=discord.Color.blurple())
 
 @bot.command(name="removerank")
-@commands.has_permissions(manage_roles=True)
+@staff_only(list(ROLES_RANKDERANK))
 async def remove_rank(ctx, member: discord.Member, *, reason: str = "Aucune raison"):
     """!removerank @membre — Retire tous les rangs du membre"""
     guild = ctx.guild
@@ -4983,7 +4993,7 @@ async def unlockdown(ctx):
     await log_security(guild, e)
 
 @bot.command(name="securitystatus")
-@commands.has_permissions(kick_members=True)
+@staff_only()
 async def security_status(ctx):
     """!securitystatus — Affiche le statut de sécurité du serveur"""
     guild = ctx.guild
@@ -5165,7 +5175,7 @@ async def report(ctx, member: discord.Member, *, raison: str):
     await ctx.send(f"✅ Ton signalement a été transmis au staff. Merci.", delete_after=8)
 
 @bot.command(name="reports")
-@commands.has_permissions(kick_members=True)
+@staff_only()
 async def view_reports(ctx, member: discord.Member = None):
     """!reports [@membre] — Liste les signalements"""
     gid = str(ctx.guild.id)
@@ -5370,7 +5380,7 @@ async def honeypot_listener(message):
 
 # ── Whois ─────────────────────────────────────────────────────────────────────
 @bot.command(name="whois")
-@commands.has_permissions(kick_members=True)
+@staff_only()
 async def whois(ctx, member: discord.Member):
     """!whois @membre — Enquête complète sur un membre"""
     gid = str(ctx.guild.id)
@@ -6213,7 +6223,7 @@ async def massbancancel(ctx):
 # ══════════════════════════════════════════════════════════════════════════════
 
 @bot.command(name="addrole")
-@commands.has_permissions(manage_roles=True)
+@staff_only()
 async def addrole(ctx, member: discord.Member, *, arg: str):
     """!addrole @membre @role — Donne un rôle à un membre"""
     role = await resolve_role(ctx, arg)
@@ -6247,7 +6257,7 @@ async def addrole(ctx, member: discord.Member, *, arg: str):
     await log(ctx.guild, e)
 
 @bot.command(name="delrole")
-@commands.has_permissions(manage_roles=True)
+@staff_only()
 async def delrole(ctx, member: discord.Member, *, arg: str):
     """!delrole @membre @role — Retire un rôle à un membre"""
     role = await resolve_role(ctx, arg)
@@ -6817,7 +6827,7 @@ async def ai_announce(ctx, *, sujet: str):
         await confirm_msg.delete()
 
 @bot.command(name="resume")
-@commands.has_permissions(kick_members=True)
+@staff_only()
 async def ai_resume(ctx, nb_messages: int = 20):
     """!resume [nb] — Résume les derniers messages du salon avec l'IA"""
     if not ANTHROPIC_API_KEY:
@@ -6854,7 +6864,7 @@ async def ai_resume(ctx, nb_messages: int = 20):
     await ctx.reply(embed=e)
 
 @bot.command(name="analyse")
-@commands.has_permissions(kick_members=True)
+@staff_only()
 async def ai_analyse(ctx, member: discord.Member):
     """!analyse @membre — Analyse le comportement d'un membre avec l'IA"""
     if not ANTHROPIC_API_KEY:
@@ -7148,7 +7158,7 @@ async def ai_summarize_ticket(guild, channel, ticket_data):
 message_count_db = load_json("message_counts.json", {})
 
 @bot.command(name="activite")
-@commands.has_permissions(kick_members=True)
+@staff_only()
 async def activite(ctx, member: discord.Member = None):
     """!activite [@membre] — Stats détaillées d'un membre"""
     member = member or ctx.author
@@ -7423,7 +7433,7 @@ async def ai_traduis(ctx, langue: str = "anglais", *, texte: str):
     await ctx.reply(embed=e)
 
 @bot.command(name="moderia")
-@commands.has_permissions(kick_members=True)
+@staff_only()
 async def ai_moderation(ctx, member: discord.Member, *, raison: str = None):
     """!moderia @membre [raison] — L'IA analyse et propose une sanction"""
     if not ANTHROPIC_API_KEY:
