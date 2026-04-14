@@ -242,6 +242,9 @@ MENTION_THRESHOLD = 5   # Mentions en 10s
 lockdown_active  = {}   # {guild_id: True/False}
 lockdown_backup  = {}   # {channel_id: overwrites sauvegardées}
 
+# Cache invitations : {guild_id: {code: uses}}
+invite_cache = {}
+
 # Comptes suspects — âge minimum en jours
 ACCOUNT_MIN_AGE_DAYS  = 7    # Âge minimum compte en jours
 VETERAN_DAYS          = 180  # Jours pour être considéré vétéran
@@ -416,6 +419,14 @@ async def on_ready():
                 if not m.bot:
                     voice_join_times[str(m.id)] = time.time()
 
+    # Charger le cache des invitations
+    for guild in bot.guilds:
+        try:
+            invites = await guild.invites()
+            invite_cache[guild.id] = {inv.code: inv.uses for inv in invites}
+        except Exception:
+            pass
+
 @bot.event
 async def on_member_join(member):
     guild = member.guild; now = time.time()
@@ -565,11 +576,71 @@ async def on_member_join(member):
                 timestamp=datetime.utcnow())
             e.set_thumbnail(url=member.display_avatar.url)
             await ch.send(embed=e)
+    # ── Détection de l'invitation utilisée ───────────────────────────────────────
+    used_invite   = None
+    used_inviter  = None
+    try:
+        current_invites = await guild.invites()
+        cached = invite_cache.get(guild.id, {})
+        for inv in current_invites:
+            old_uses = cached.get(inv.code, 0)
+            if inv.uses > old_uses:
+                used_invite  = inv
+                used_inviter = inv.inviter
+                break
+        # Mettre à jour le cache
+        invite_cache[guild.id] = {inv.code: inv.uses for inv in current_invites}
+    except Exception:
+        pass
+
+    # Log invite
+    await _log_invite_join(guild, member, used_invite, used_inviter)
+
     e = discord.Embed(title="📥 Nouveau membre",
         description=f"{member.mention}\nCompte créé le {member.created_at.strftime('%d/%m/%Y')}",
         color=discord.Color.green(), timestamp=datetime.utcnow())
     e.set_thumbnail(url=member.display_avatar.url)
     await log(guild, e)
+
+async def _log_invite_join(guild, member, invite, inviter):
+    """Envoie un embed de log d'invitation dans le salon configuré."""
+    ch_id = get_cfg(guild.id, "invite_log_channel")
+    if not ch_id:
+        return
+    ch = guild.get_channel(int(ch_id))
+    if not ch:
+        try: ch = await guild.fetch_channel(int(ch_id))
+        except: return
+
+    e = discord.Embed(
+        title="📨 Invitation utilisée",
+        color=0xFF89B4,
+        timestamp=datetime.utcnow()
+    )
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.add_field(name="👤 Nouveau membre", value=f"{member.mention}\n`{member.id}`", inline=True)
+
+    if inviter:
+        e.add_field(name="🔗 Invité par", value=f"{inviter.mention}\n`{inviter.id}`", inline=True)
+        e.add_field(name="📎 Code", value=f"`discord.gg/{invite.code}`\n**{invite.uses}** utilisation(s)", inline=True)
+    else:
+        e.add_field(name="🔗 Invité par", value="*Inconnu*", inline=True)
+
+    account_age = (datetime.utcnow() - member.created_at.replace(tzinfo=None)).days
+    e.add_field(name="📅 Compte créé", value=f"il y a **{account_age}j**", inline=True)
+    e.add_field(name="👥 Membres total", value=str(guild.member_count), inline=True)
+    e.set_footer(text="Kozakura • Invite Log")
+    await ch.send(embed=e)
+
+@bot.command(name="setinvitelog")
+@commands.has_permissions(administrator=True)
+async def setinvitelog(ctx, *, arg: str):
+    """!setinvitelog #salon — Définit le salon de log des invitations"""
+    channel = await resolve_channel(ctx, arg)
+    if not channel:
+        return await ctx.send("❌ Salon introuvable.")
+    set_cfg(ctx.guild.id, "invite_log_channel", channel.id)
+    await ctx.send(f"✅ Log invitations → {channel.mention}")
 
 @bot.event
 async def on_member_remove(member):
@@ -4186,8 +4257,10 @@ async def on_member_update(before, after):
 
 @bot.event
 async def on_invite_create(invite):
-    """Log les invitations créées"""
+    """Log les invitations créées + mise à jour du cache"""
     guild = invite.guild
+    # Mise à jour du cache
+    invite_cache.setdefault(guild.id, {})[invite.code] = invite.uses
     e = discord.Embed(
         title="🔗 Invitation Créée",
         description=f"Nouvelle invitation par {invite.inviter.mention if invite.inviter else '?'}",
@@ -4202,9 +4275,11 @@ async def on_invite_create(invite):
 
 @bot.event
 async def on_invite_delete(invite):
-    """Log les invitations supprimées"""
+    """Log les invitations supprimées + mise à jour du cache"""
     if not invite.guild:
         return
+    # Retirer du cache
+    invite_cache.get(invite.guild.id, {}).pop(invite.code, None)
     e = discord.Embed(
         title="🔗 Invitation Supprimée",
         description=f"Code : `discord.gg/{invite.code}`",
