@@ -3993,8 +3993,15 @@ async def on_voice_state_update(member, before, after):
                     return
 
     # ── Vocal temporaire (Join to Create) ────────────────────────────────────
+    # Détection : salon configuré OU nom contenant des mots-clés
+    CREATE_VOC_KEYWORDS = ["créer-un-vocal", "creer-un-vocal", "create-a-voice",
+                           "join-to-create", "créer un vocal", "➕", "créer"]
     create_ch_id = get_cfg(guild.id, "temp_voice_create_channel")
-    if create_ch_id and after.channel and str(after.channel.id) == str(create_ch_id):
+    is_create_channel = (
+        (create_ch_id and after.channel and str(after.channel.id) == str(create_ch_id))
+        or (after.channel and any(kw in after.channel.name.lower() for kw in CREATE_VOC_KEYWORDS))
+    )
+    if is_create_channel and after.channel and after.channel.id not in temp_voice_channels:
         category = after.channel.category
         try:
             new_ch = await guild.create_voice_channel(
