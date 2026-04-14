@@ -3848,46 +3848,71 @@ async def on_voice_state_update(member, before, after):
 
     # ── PROTECTION VOC utilisateur protégé ────────────────────────────────────
     if member.id in ANTI_PING_USERS:
-        await asyncio.sleep(0.3)
-        actor = None
-        try:
-            async for entry in guild.audit_logs(limit=1):
-                if (datetime.utcnow() - entry.created_at.replace(tzinfo=None)).total_seconds() < 5:
-                    actor = entry.user
-                break
-        except Exception:
-            pass
 
-        actor_is_self = actor and actor.id == member.id
-        actor_is_bot  = actor and actor.id == guild.me.id
-
-        # Déconnexion forcée par quelqu'un d'autre
-        if before.channel is not None and after.channel is None and not actor_is_self and not actor_is_bot and actor:
-            # Remettre le membre dans son salon
+        # ── Déconnexion forcée ──────────────────────────────────────────────
+        # Quand on se déco soi-même → pas d'entrée member_disconnect dans l'audit log
+        # Quand quelqu'un nous force → entrée member_disconnect avec l'acteur
+        if before.channel is not None and after.channel is None:
+            await asyncio.sleep(0.5)
+            actor = None
             try:
-                await member.move_to(before.channel, reason="🔒 Protection voc — reconnexion automatique")
+                async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.member_disconnect):
+                    age = (datetime.utcnow() - entry.created_at.replace(tzinfo=None)).total_seconds()
+                    if age < 5 and entry.user.id != guild.me.id:
+                        actor = entry.user
+                    break
             except Exception:
                 pass
-            await _sanction_voc_actor(guild, actor, member, "déconnexion forcée")
-            return
 
-        # Mute serveur forcé
-        if not before.mute and after.mute and not actor_is_self and not actor_is_bot and actor:
+            if actor and actor.id != member.id:
+                try:
+                    await member.move_to(before.channel, reason="🔒 Protection voc — reconnexion automatique")
+                except Exception:
+                    pass
+                await _sanction_voc_actor(guild, actor, member, "déconnexion forcée du vocal")
+                return
+
+        # ── Mute serveur forcé ──────────────────────────────────────────────
+        if not before.mute and after.mute:
+            await asyncio.sleep(0.5)
+            actor = None
             try:
-                await member.edit(mute=False, reason="🔒 Protection voc — unmute automatique")
+                async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.member_update):
+                    age = (datetime.utcnow() - entry.created_at.replace(tzinfo=None)).total_seconds()
+                    if age < 5 and entry.user.id != guild.me.id and entry.user.id != member.id:
+                        actor = entry.user
+                    break
             except Exception:
                 pass
-            await _sanction_voc_actor(guild, actor, member, "mute serveur forcé")
-            return
 
-        # Sourd serveur forcé
-        if not before.deaf and after.deaf and not actor_is_self and not actor_is_bot and actor:
+            if actor:
+                try:
+                    await member.edit(mute=False, reason="🔒 Protection voc — unmute automatique")
+                except Exception:
+                    pass
+                await _sanction_voc_actor(guild, actor, member, "mute serveur forcé")
+                return
+
+        # ── Sourd serveur forcé ─────────────────────────────────────────────
+        if not before.deaf and after.deaf:
+            await asyncio.sleep(0.5)
+            actor = None
             try:
-                await member.edit(deafen=False, reason="🔒 Protection voc — undeafen automatique")
+                async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.member_update):
+                    age = (datetime.utcnow() - entry.created_at.replace(tzinfo=None)).total_seconds()
+                    if age < 5 and entry.user.id != guild.me.id and entry.user.id != member.id:
+                        actor = entry.user
+                    break
             except Exception:
                 pass
-            await _sanction_voc_actor(guild, actor, member, "sourd serveur forcé")
-            return
+
+            if actor:
+                try:
+                    await member.edit(deafen=False, reason="🔒 Protection voc — undeafen automatique")
+                except Exception:
+                    pass
+                await _sanction_voc_actor(guild, actor, member, "sourd serveur forcé")
+                return
 
     # ── Anti-spam vocal ───────────────────────────────────────────────────────
     if before.channel != after.channel:
