@@ -3995,7 +3995,6 @@ async def on_voice_state_update(member, before, after):
     # ── Vocal temporaire (Join to Create) ────────────────────────────────────
     create_ch_id = get_cfg(guild.id, "temp_voice_create_channel")
     if create_ch_id and after.channel and str(after.channel.id) == str(create_ch_id):
-        # L'utilisateur rejoint le salon "Créer un vocal"
         category = after.channel.category
         try:
             new_ch = await guild.create_voice_channel(
@@ -4015,6 +4014,21 @@ async def on_voice_state_update(member, before, after):
             )
             temp_voice_channels[new_ch.id] = member.id
             await member.move_to(new_ch, reason="Vocal temporaire")
+            # Envoyer le panel de gestion en DM
+            try:
+                panel = TempVocalPanel(guild.id, new_ch.id)
+                e_dm = discord.Embed(
+                    title="🎙️ Ton vocal temporaire est prêt !",
+                    description=(
+                        f"**Salon :** {new_ch.name}\n"
+                        "Utilise les boutons ci-dessous pour gérer ton vocal."
+                    ),
+                    color=0xFF89B4
+                )
+                e_dm.set_footer(text="Ce panel reste actif tant que tu es dans le vocal.")
+                await member.send(embed=e_dm, view=panel)
+            except Exception:
+                pass  # DMs désactivés
         except Exception:
             pass
 
@@ -9208,6 +9222,110 @@ async def userinfo(ctx, member: discord.Member = None):
         inline=False)
     e.set_footer(text=f"Kozakura  •  {ctx.guild.name}")
     await ctx.send(embed=e)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🎙️ VOCAL TEMPORAIRE — PANEL UI
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TempVocalRenameModal(discord.ui.Modal, title="✏️ Renommer ton vocal"):
+    name = discord.ui.TextInput(
+        label="Nouveau nom du vocal",
+        placeholder="Ex: Soirée gaming, Détente, Zone privée...",
+        min_length=1, max_length=50,
+        style=discord.TextStyle.short
+    )
+
+    def __init__(self, guild_id, channel_id):
+        super().__init__()
+        self.guild_id   = guild_id
+        self.channel_id = channel_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = bot.get_guild(self.guild_id)
+        ch    = guild.get_channel(self.channel_id) if guild else None
+        if not ch:
+            return await interaction.response.send_message("❌ Vocal introuvable.", ephemeral=True)
+        if temp_voice_channels.get(ch.id) != interaction.user.id:
+            return await interaction.response.send_message("❌ Tu n'es pas le propriétaire.", ephemeral=True)
+        await ch.edit(name=self.name.value)
+        await interaction.response.send_message(f"✅ Vocal renommé en **{self.name.value}**.", ephemeral=True)
+
+class TempVocalLimitModal(discord.ui.Modal, title="👥 Limite de membres"):
+    limit = discord.ui.TextInput(
+        label="Limite (0 = illimité, max 99)",
+        placeholder="Ex: 5",
+        min_length=1, max_length=2,
+        style=discord.TextStyle.short
+    )
+
+    def __init__(self, guild_id, channel_id):
+        super().__init__()
+        self.guild_id   = guild_id
+        self.channel_id = channel_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = bot.get_guild(self.guild_id)
+        ch    = guild.get_channel(self.channel_id) if guild else None
+        if not ch:
+            return await interaction.response.send_message("❌ Vocal introuvable.", ephemeral=True)
+        if temp_voice_channels.get(ch.id) != interaction.user.id:
+            return await interaction.response.send_message("❌ Tu n'es pas le propriétaire.", ephemeral=True)
+        try:
+            val = max(0, min(99, int(self.limit.value)))
+        except ValueError:
+            return await interaction.response.send_message("❌ Entre un nombre entre 0 et 99.", ephemeral=True)
+        await ch.edit(user_limit=val)
+        label = f"**{val}** membres max" if val > 0 else "**Illimité**"
+        await interaction.response.send_message(f"✅ Limite définie : {label}.", ephemeral=True)
+
+class TempVocalPanel(discord.ui.View):
+    def __init__(self, guild_id, channel_id):
+        super().__init__(timeout=None)
+        self.guild_id   = guild_id
+        self.channel_id = channel_id
+
+    def _get_ch(self):
+        guild = bot.get_guild(self.guild_id)
+        return guild.get_channel(self.channel_id) if guild else None
+
+    @discord.ui.button(label="✏️ Renommer", style=discord.ButtonStyle.blurple)
+    async def rename_btn(self, interaction: discord.Interaction, _):
+        await interaction.response.send_modal(TempVocalRenameModal(self.guild_id, self.channel_id))
+
+    @discord.ui.button(label="🔒 Verrouiller", style=discord.ButtonStyle.grey)
+    async def lock_btn(self, interaction: discord.Interaction, btn: discord.ui.Button):
+        ch = self._get_ch()
+        if not ch:
+            return await interaction.response.send_message("❌ Vocal introuvable.", ephemeral=True)
+        if temp_voice_channels.get(ch.id) != interaction.user.id:
+            return await interaction.response.send_message("❌ Tu n'es pas le propriétaire.", ephemeral=True)
+        locked = ch.overwrites_for(interaction.guild.default_role).connect is False
+        if locked:
+            await ch.set_permissions(interaction.guild.default_role, connect=True)
+            btn.label = "🔒 Verrouiller"
+            await interaction.response.edit_message(view=self)
+            await interaction.followup.send("🔓 Vocal déverrouillé.", ephemeral=True)
+        else:
+            await ch.set_permissions(interaction.guild.default_role, connect=False)
+            btn.label = "🔓 Déverrouiller"
+            await interaction.response.edit_message(view=self)
+            await interaction.followup.send("🔒 Vocal verrouillé.", ephemeral=True)
+
+    @discord.ui.button(label="👥 Limite", style=discord.ButtonStyle.grey)
+    async def limit_btn(self, interaction: discord.Interaction, _):
+        await interaction.response.send_modal(TempVocalLimitModal(self.guild_id, self.channel_id))
+
+    @discord.ui.button(label="❌ Fermer", style=discord.ButtonStyle.red)
+    async def close_btn(self, interaction: discord.Interaction, _):
+        ch = self._get_ch()
+        if not ch:
+            return await interaction.response.send_message("❌ Vocal déjà supprimé.", ephemeral=True)
+        if temp_voice_channels.get(ch.id) != interaction.user.id:
+            return await interaction.response.send_message("❌ Tu n'es pas le propriétaire.", ephemeral=True)
+        temp_voice_channels.pop(ch.id, None)
+        await ch.delete(reason="Fermé par le propriétaire")
+        await interaction.response.send_message("✅ Vocal fermé.", ephemeral=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
