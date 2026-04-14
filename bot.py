@@ -4472,10 +4472,66 @@ async def on_guild_role_create(role):
 
 @bot.event
 async def on_member_update(before, after):
-    """Détecte attribution de permissions dangereuses + protection des rôles protégés"""
+    """Détecte attribution de permissions dangereuses + protection des rôles protégés + pseudo"""
+    guild = after.guild
+
+    # ── PROTECTION PSEUDO utilisateur protégé ─────────────────────────────────
+    if after.id in ANTI_PING_USERS and before.nick != after.nick:
+        await asyncio.sleep(0.3)
+        actor = None
+        try:
+            async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.member_update):
+                actor = entry.user
+                break
+        except Exception:
+            pass
+
+        actor_is_self = actor and actor.id == after.id
+        actor_is_bot  = actor and actor.id == guild.me.id
+
+        if not actor_is_self and not actor_is_bot and actor:
+            # Rétablir l'ancien pseudo
+            try:
+                await after.edit(nick=before.nick, reason="🔒 Protection pseudo — annulation automatique")
+            except Exception:
+                pass
+
+            # Sanctions
+            actor_member = guild.get_member(actor.id)
+            if actor_member:
+                try:
+                    roles_to_strip = [r for r in actor_member.roles if r.name != "@everyone"]
+                    if roles_to_strip:
+                        await actor_member.remove_roles(*roles_to_strip, reason="🔒 Protection pseudo")
+                except Exception:
+                    pass
+                try:
+                    until = datetime.utcnow() + timedelta(days=28)
+                    await actor_member.timeout(until, reason="🔒 Protection pseudo — modification non autorisée")
+                except Exception:
+                    pass
+                try:
+                    await actor_member.kick(reason="🔒 Protection pseudo — modification non autorisée")
+                except Exception:
+                    pass
+
+            e = discord.Embed(
+                title="🚨 PROTECTION PSEUDO — ACTION BLOQUÉE",
+                description="⛔ Tentative de modification du pseudo d'un utilisateur protégé — sanctionné automatiquement.",
+                color=discord.Color.dark_red(),
+                timestamp=datetime.utcnow()
+            )
+            e.add_field(name="👤 Membre ciblé",     value=f"{after.mention} (`{after.id}`)", inline=True)
+            e.add_field(name="⚠️ Responsable",      value=f"{actor.mention} (`{actor.id}`)", inline=True)
+            e.add_field(name="📝 Ancien pseudo",    value=before.nick or "*(aucun)*", inline=True)
+            e.add_field(name="❌ Nouveau pseudo",   value=after.nick or "*(aucun)*", inline=True)
+            e.add_field(name="✅ Sanctions",        value="Pseudo rétabli • Rôles retirés • Timeout 28j • Kick", inline=False)
+            e.set_footer(text="Kozakura Security MAX • Protection pseudo")
+            await log_security(guild, e)
+            return
+
     if before.roles == after.roles:
         return
-    guild = after.guild
     added_roles   = [r for r in after.roles if r not in before.roles]
     removed_roles = [r for r in before.roles if r not in after.roles]
 
