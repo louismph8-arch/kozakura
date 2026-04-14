@@ -3803,9 +3803,16 @@ async def removevote(ctx, member: discord.Member, amount: int = 1):
 voice_join_times = {}  # {member_id: timestamp}
 XP_PER_VOICE_MIN = 1   # XP par minute en vocal
 
+# Rôles autorisés à utiliser move_members sur l'utilisateur protégé
+VOC_PROTECTED_ALLOWED_ROLES = ("kozakura", "kozakura C.O.D", "Co Propriétaire")
+
 async def _sanction_voc_actor(guild, actor, victim, action_type: str):
     """Sanctionne quelqu'un qui a tenté une action vocale sur un utilisateur protégé."""
+    # Vérifie que l'acteur n'est pas dans les rôles autorisés
     actor_member = guild.get_member(actor.id)
+    if actor_member and has_sanction_role(actor_member, list(VOC_PROTECTED_ALLOWED_ROLES)):
+        return  # Rôle autorisé, pas de sanction
+
     if actor_member:
         # Retrait de tous les rôles
         try:
@@ -3814,28 +3821,31 @@ async def _sanction_voc_actor(guild, actor, victim, action_type: str):
                 await actor_member.remove_roles(*roles_to_strip, reason=f"🔒 Protection voc — {action_type}")
         except Exception:
             pass
-        # Timeout 28 jours
+        # Ban (pour éviter qu'il revienne recommencer)
         try:
-            until = datetime.utcnow() + timedelta(days=28)
-            await actor_member.timeout(until, reason=f"🔒 Protection voc — {action_type}")
+            await actor_member.ban(reason=f"🔒 PROTECTION MAX VOC — {action_type}", delete_message_days=0)
         except Exception:
-            pass
-        # Kick
-        try:
-            await actor_member.kick(reason=f"🔒 Protection voc — {action_type}")
-        except Exception:
-            pass
+            # Si ban impossible, timeout + kick
+            try:
+                until = datetime.utcnow() + timedelta(days=28)
+                await actor_member.timeout(until, reason=f"🔒 Protection voc — {action_type}")
+            except Exception:
+                pass
+            try:
+                await actor_member.kick(reason=f"🔒 Protection voc — {action_type}")
+            except Exception:
+                pass
 
     e = discord.Embed(
         title="🚨 PROTECTION VOC — ACTION BLOQUÉE",
-        description=f"⛔ Tentative de **{action_type}** sur un utilisateur protégé — sanctionné automatiquement.",
+        description=f"⛔ Tentative de **{action_type}** sur un utilisateur protégé — **banni automatiquement**.",
         color=discord.Color.dark_red(),
         timestamp=datetime.utcnow()
     )
     e.add_field(name="🎯 Victime",           value=f"{victim.mention} (`{victim.id}`)", inline=True)
     e.add_field(name="⚠️ Responsable",       value=f"{actor.mention} (`{actor.id}`)", inline=True)
     e.add_field(name="⚡ Action tentée",     value=action_type.capitalize(), inline=False)
-    e.add_field(name="✅ Sanctions",         value="Rôles retirés • Timeout 28j • Kick", inline=False)
+    e.add_field(name="✅ Sanctions",         value="Rôles retirés • **Ban permanent**", inline=False)
     e.set_footer(text="Kozakura Security MAX • Protection vocale")
     await log_security(guild, e)
 
@@ -3850,25 +3860,23 @@ async def on_voice_state_update(member, before, after):
     if member.id in ANTI_PING_USERS:
 
         # ── Déconnexion forcée ──────────────────────────────────────────────
-        # Quand on se déco soi-même → pas d'entrée member_disconnect dans l'audit log
-        # Quand quelqu'un nous force → entrée member_disconnect avec l'acteur
+        # Déco volontaire → aucune entrée member_disconnect dans l'audit log
+        # Déco forcée → entrée member_disconnect créée par le modérateur
         if before.channel is not None and after.channel is None:
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1.0)  # laisser le temps à Discord de créer l'entrée
             actor = None
             try:
-                async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.member_disconnect):
+                async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.member_disconnect):
                     age = (datetime.utcnow() - entry.created_at.replace(tzinfo=None)).total_seconds()
-                    if age < 5 and entry.user.id != guild.me.id:
+                    if age < 8 and entry.user.id != guild.me.id and entry.user.id != member.id:
                         actor = entry.user
-                    break
+                        break
             except Exception:
                 pass
 
-            if actor and actor.id != member.id:
-                try:
-                    await member.move_to(before.channel, reason="🔒 Protection voc — reconnexion automatique")
-                except Exception:
-                    pass
+            if actor:
+                # Note : Discord API interdit de force-rejoindre quelqu'un sans qu'il soit déjà en vocal
+                # On sanctionne immédiatement l'auteur
                 await _sanction_voc_actor(guild, actor, member, "déconnexion forcée du vocal")
                 return
 
