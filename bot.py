@@ -3803,11 +3803,91 @@ async def removevote(ctx, member: discord.Member, amount: int = 1):
 voice_join_times = {}  # {member_id: timestamp}
 XP_PER_VOICE_MIN = 1   # XP par minute en vocal
 
+async def _sanction_voc_actor(guild, actor, victim, action_type: str):
+    """Sanctionne quelqu'un qui a tenté une action vocale sur un utilisateur protégé."""
+    actor_member = guild.get_member(actor.id)
+    if actor_member:
+        # Retrait de tous les rôles
+        try:
+            roles_to_strip = [r for r in actor_member.roles if r.name != "@everyone"]
+            if roles_to_strip:
+                await actor_member.remove_roles(*roles_to_strip, reason=f"🔒 Protection voc — {action_type}")
+        except Exception:
+            pass
+        # Timeout 28 jours
+        try:
+            until = datetime.utcnow() + timedelta(days=28)
+            await actor_member.timeout(until, reason=f"🔒 Protection voc — {action_type}")
+        except Exception:
+            pass
+        # Kick
+        try:
+            await actor_member.kick(reason=f"🔒 Protection voc — {action_type}")
+        except Exception:
+            pass
+
+    e = discord.Embed(
+        title="🚨 PROTECTION VOC — ACTION BLOQUÉE",
+        description=f"⛔ Tentative de **{action_type}** sur un utilisateur protégé — sanctionné automatiquement.",
+        color=discord.Color.dark_red(),
+        timestamp=datetime.utcnow()
+    )
+    e.add_field(name="🎯 Victime",           value=f"{victim.mention} (`{victim.id}`)", inline=True)
+    e.add_field(name="⚠️ Responsable",       value=f"{actor.mention} (`{actor.id}`)", inline=True)
+    e.add_field(name="⚡ Action tentée",     value=action_type.capitalize(), inline=False)
+    e.add_field(name="✅ Sanctions",         value="Rôles retirés • Timeout 28j • Kick", inline=False)
+    e.set_footer(text="Kozakura Security MAX • Protection vocale")
+    await log_security(guild, e)
+
 @bot.event
 async def on_voice_state_update(member, before, after):
     if member.bot: return
     uid = str(member.id)
     gid = str(member.guild.id)
+    guild = member.guild
+
+    # ── PROTECTION VOC utilisateur protégé ────────────────────────────────────
+    if member.id in ANTI_PING_USERS:
+        await asyncio.sleep(0.3)
+        actor = None
+        try:
+            async for entry in guild.audit_logs(limit=1):
+                if (datetime.utcnow() - entry.created_at.replace(tzinfo=None)).total_seconds() < 5:
+                    actor = entry.user
+                break
+        except Exception:
+            pass
+
+        actor_is_self = actor and actor.id == member.id
+        actor_is_bot  = actor and actor.id == guild.me.id
+
+        # Déconnexion forcée par quelqu'un d'autre
+        if before.channel is not None and after.channel is None and not actor_is_self and not actor_is_bot and actor:
+            # Remettre le membre dans son salon
+            try:
+                await member.move_to(before.channel, reason="🔒 Protection voc — reconnexion automatique")
+            except Exception:
+                pass
+            await _sanction_voc_actor(guild, actor, member, "déconnexion forcée")
+            return
+
+        # Mute serveur forcé
+        if not before.mute and after.mute and not actor_is_self and not actor_is_bot and actor:
+            try:
+                await member.edit(mute=False, reason="🔒 Protection voc — unmute automatique")
+            except Exception:
+                pass
+            await _sanction_voc_actor(guild, actor, member, "mute serveur forcé")
+            return
+
+        # Sourd serveur forcé
+        if not before.deaf and after.deaf and not actor_is_self and not actor_is_bot and actor:
+            try:
+                await member.edit(deafen=False, reason="🔒 Protection voc — undeafen automatique")
+            except Exception:
+                pass
+            await _sanction_voc_actor(guild, actor, member, "sourd serveur forcé")
+            return
 
     # ── Anti-spam vocal ───────────────────────────────────────────────────────
     if before.channel != after.channel:
