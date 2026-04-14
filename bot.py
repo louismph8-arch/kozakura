@@ -305,12 +305,14 @@ async def nuke_action(guild, member, action_type: str):
 
 
 # ─── NOMS DES RÔLES (à personnaliser selon ton serveur) ──────────────────────
-ROLE_GESTION_STAFF  = "Gestion Staff"
-ROLE_GESTION_ABUS   = "Gestion Abus"
-ROLE_COD            = "kozakura C.O.D"       # Peut tout voir
-ROLE_COD_ID         = 1478530602037674148    # ID Discord du rôle kozakura C.O.D
-ROLE_PARTENARIAT    = "Partenariat"
-ROLE_JUGE           = "Gestion Staff"        # Rôle requis pour le tribunal
+ROLE_GESTION_STAFF     = "Gestion Staff"
+ROLE_GESTION_STAFF_ID  = 1493629004824186980   # ID Discord du rôle Gestion Staff
+ROLE_GESTION_ABUS      = "Gestion Abus"
+ROLE_GESTION_ABUS_ID   = 1493629136269217912   # ID Discord du rôle Gestion Abus
+ROLE_COD               = "kozakura C.O.D"      # Peut tout voir
+ROLE_COD_ID            = 1478530602037674148   # ID Discord du rôle kozakura C.O.D
+ROLE_PARTENARIAT       = "Partenariat"
+ROLE_JUGE              = "Gestion Staff"       # Rôle requis pour le tribunal
 
 # Rôles exemptés de l'anti-nuke et des sécurités automatiques
 NUKE_EXEMPT_ROLES = ("kozakura", "kozakura C.O.D", "Co Propriétaire", "Développer")
@@ -2257,7 +2259,8 @@ TICKET_TYPES = {
         "label": "⚒️ Gestion Staff",
         "emoji": "⚒️",
         "color": discord.Color.from_rgb(88, 101, 242),
-        "role":  ROLE_GESTION_STAFF,
+        "role":    ROLE_GESTION_STAFF,
+        "role_id": ROLE_GESTION_STAFF_ID,
         "description": "Candidature staff, rank-up, récupération de rôles perdus.",
         "style": discord.ButtonStyle.blurple,
         "icon": "🛠️",
@@ -2266,7 +2269,8 @@ TICKET_TYPES = {
         "label": "🛡️ Gestion Abus",
         "emoji": "🛡️",
         "color": discord.Color.from_rgb(237, 66, 69),
-        "role":  ROLE_GESTION_ABUS,
+        "role":    ROLE_GESTION_ABUS,
+        "role_id": ROLE_GESTION_ABUS_ID,
         "description": "Signaler un abus, conflit ou contester une sanction.",
         "style": discord.ButtonStyle.red,
         "icon": "⚖️",
