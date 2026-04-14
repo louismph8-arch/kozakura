@@ -317,6 +317,10 @@ ROLE_JUGE              = "Gestion Staff"       # Rôle requis pour le tribunal
 # Rôles exemptés de l'anti-nuke et des sécurités automatiques
 NUKE_EXEMPT_ROLES = ("kozakura", "kozakura C.O.D", "Co Propriétaire", "Développer")
 
+# Rôles protégés : seul le rôle "kozakura" peut les donner/retirer
+PROTECTED_ROLES = ("Développer",)
+ROLE_CROWN = "kozakura"  # Seul ce rôle peut toucher les rôles protégés
+
 # ─── UTILITAIRES ──────────────────────────────────────────────────────────────
 def xp_for_level(lvl): return int(100 * (lvl ** 1.5))
 
@@ -4230,11 +4234,56 @@ async def on_guild_role_create(role):
 
 @bot.event
 async def on_member_update(before, after):
-    """Détecte attribution de permissions dangereuses à un membre"""
+    """Détecte attribution de permissions dangereuses + protection des rôles protégés"""
     if before.roles == after.roles:
         return
     guild = after.guild
-    added_roles = [r for r in after.roles if r not in before.roles]
+    added_roles   = [r for r in after.roles if r not in before.roles]
+    removed_roles = [r for r in before.roles if r not in after.roles]
+
+    # ── Protection rôles protégés (ex: Développer) ───────────────────────────
+    changed_protected = [r for r in added_roles + removed_roles if r.name in PROTECTED_ROLES]
+    if changed_protected:
+        await asyncio.sleep(0.5)
+        # Trouver qui a fait la modification
+        moderator = None
+        try:
+            async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.member_role_update):
+                moderator = entry.user
+                break
+        except Exception:
+            pass
+
+        # Si ce n'est pas la couronne ni le bot lui-même → annuler
+        crown_role = discord.utils.get(guild.roles, name=ROLE_CROWN)
+        actor_has_crown = crown_role and moderator and crown_role in moderator.roles
+        actor_is_bot = moderator and moderator.id == guild.me.id
+
+        if not actor_has_crown and not actor_is_bot:
+            # Rétablir les rôles protégés à leur état d'avant
+            for role in changed_protected:
+                try:
+                    if role in added_roles:
+                        await after.remove_roles(role, reason="🔒 Rôle protégé — annulation automatique")
+                    else:
+                        await after.add_roles(role, reason="🔒 Rôle protégé — annulation automatique")
+                except Exception:
+                    pass
+
+            e = discord.Embed(
+                title="🔒 Rôle Protégé — Action Annulée",
+                description=f"Une modification non autorisée sur un rôle protégé a été **annulée automatiquement**.",
+                color=discord.Color.dark_red(),
+                timestamp=datetime.utcnow()
+            )
+            e.add_field(name="🎭 Rôle(s) concerné(s)", value=", ".join(f"**{r.name}**" for r in changed_protected), inline=False)
+            e.add_field(name="👤 Membre ciblé", value=f"{after.mention} (`{after.id}`)", inline=True)
+            e.add_field(name="⚠️ Action tentée par", value=moderator.mention if moderator else "Inconnu", inline=True)
+            e.add_field(name="👑 Seul autorisé", value=f"Rôle **{ROLE_CROWN}**", inline=False)
+            e.set_footer(text="Kozakura Security • Protection automatique")
+            await log_security(guild, e)
+            return
+
     dangerous_perms = ["administrator", "manage_guild", "manage_channels",
                        "manage_roles", "manage_webhooks", "ban_members", "kick_members"]
     for role in added_roles:
@@ -5655,6 +5704,10 @@ async def addrole(ctx, member: discord.Member, *, arg: str):
     if not role:
         return await ctx.send("❌ Rôle introuvable. Utilise `!addrole @membre @role` ou le nom exact.")
 
+    # Rôles protégés : uniquement la couronne peut les attribuer
+    if role.name in PROTECTED_ROLES and not has_sanction_role(ctx.author, [ROLE_CROWN]):
+        return await ctx.send(f"👑 Seul le rôle **{ROLE_CROWN}** peut attribuer le rôle **{role.name}**.", delete_after=8)
+
     if role in member.roles:
         return await ctx.send(f"❌ {member.mention} possède déjà le rôle {role.mention}.")
 
@@ -5684,6 +5737,10 @@ async def delrole(ctx, member: discord.Member, *, arg: str):
     role = await resolve_role(ctx, arg)
     if not role:
         return await ctx.send("❌ Rôle introuvable. Utilise `!delrole @membre @role` ou le nom exact.")
+
+    # Rôles protégés : uniquement la couronne peut les retirer
+    if role.name in PROTECTED_ROLES and not has_sanction_role(ctx.author, [ROLE_CROWN]):
+        return await ctx.send(f"👑 Seul le rôle **{ROLE_CROWN}** peut retirer le rôle **{role.name}**.", delete_after=8)
 
     if role not in member.roles:
         return await ctx.send(f"❌ {member.mention} n'a pas le rôle {role.mention}.")
