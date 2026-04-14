@@ -4138,18 +4138,45 @@ async def on_voice_state_update(member, before, after):
                                 except Exception: pass
 
         await refresh_vocal_counter(member.guild)
+        # Vérifier si c'est une déconnexion forcée (audit log)
+        kicker = None
+        try:
+            await asyncio.sleep(0.8)
+            now_dt = discord.utils.utcnow()
+            async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.member_disconnect):
+                age = (now_dt - entry.created_at).total_seconds()
+                if age < 6 and entry.user.id != guild.me.id and entry.user.id != member.id:
+                    kicker = entry.user
+                    break
+        except Exception:
+            pass
+
         # Log vocal départ
-        elapsed_display = f"{elapsed_minutes} min" if elapsed_minutes > 0 else "< 1 min"
-        e_voc = discord.Embed(
-            description=(
-                f"🔇 **{member.display_name}** a quitté **{before.channel.name}**\n"
-                f"⏱️ Temps passé : `{elapsed_display}`"
-            ),
-            color=0xED4245,
-            timestamp=datetime.utcnow()
-        )
-        e_voc.set_author(name=str(member), icon_url=member.display_avatar.url)
-        e_voc.set_footer(text=f"#{before.channel.name}  •  {member.guild.name}")
+        elapsed_display = f"{elapsed_minutes} min" if 'elapsed_minutes' in dir() and elapsed_minutes > 0 else "< 1 min"
+        if kicker:
+            e_voc = discord.Embed(
+                description=(
+                    f"👢 **{member.display_name}** a été **expulsé du vocal** par {kicker.mention}\n"
+                    f"📌 Salon : **{before.channel.name}**\n"
+                    f"⏱️ Temps passé : `{elapsed_display}`"
+                ),
+                color=0xFF0000,
+                timestamp=datetime.utcnow()
+            )
+            e_voc.set_author(name=str(member), icon_url=member.display_avatar.url)
+            e_voc.add_field(name="👮 Expulsé par", value=f"{kicker.mention} (`{kicker.id}`)", inline=False)
+            e_voc.set_footer(text=f"#{before.channel.name}  •  {member.guild.name}")
+        else:
+            e_voc = discord.Embed(
+                description=(
+                    f"🔇 **{member.display_name}** a quitté **{before.channel.name}**\n"
+                    f"⏱️ Temps passé : `{elapsed_display}`"
+                ),
+                color=0xED4245,
+                timestamp=datetime.utcnow()
+            )
+            e_voc.set_author(name=str(member), icon_url=member.display_avatar.url)
+            e_voc.set_footer(text=f"#{before.channel.name}  •  {member.guild.name}")
         await log_vocal(member.guild, e_voc)
 
     # Changement de salon vocal
