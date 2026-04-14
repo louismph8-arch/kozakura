@@ -3808,8 +3808,8 @@ async def removevote(ctx, member: discord.Member, amount: int = 1):
 voice_join_times = {}  # {member_id: timestamp}
 XP_PER_VOICE_MIN = 1   # XP par minute en vocal
 
-# Rôles autorisés à utiliser move_members sur l'utilisateur protégé
-VOC_PROTECTED_ALLOWED_ROLES = ("kozakura", "kozakura C.O.D", "Co Propriétaire")
+# Rôles autorisés à utiliser move_members sur l'utilisateur protégé (seulement la couronne)
+VOC_PROTECTED_ALLOWED_ROLES = ("kozakura", "kozakura C.O.D")
 
 async def _sanction_voc_actor(guild, actor, victim, action_type: str):
     """Sanctionne quelqu'un qui a tenté une action vocale sur un utilisateur protégé."""
