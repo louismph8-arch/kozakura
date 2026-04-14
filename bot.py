@@ -2645,7 +2645,7 @@ async def open_ticket(interaction: discord.Interaction, ticket_type: str, subjec
                         f"❌ Tu as déjà un ticket **{cfg['emoji']} {ticket_type}** ouvert : {ch.mention}",
                         ephemeral=True)
 
-    cat_id   = get_cfg(guild.id, "ticket_category")
+    cat_id   = get_cfg(guild.id, "ticket_category") or 1493632554006347898
     category = guild.get_channel(int(cat_id)) if cat_id else None
 
     ticket_number = len(tickets_db.get(gid, {})) + 1
