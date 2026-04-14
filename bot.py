@@ -326,6 +326,11 @@ ANTI_PING_USERS = {
     777495590049021972: ["louis", "louisl", "louismph8"],  # pseudo(s) à surveiller (minuscules)
 }
 
+# Protection vocale légère : toucher ces membres → mute 10min + 1 avertissement
+VOC_WARN_USERS = {
+    1467246069833269526,  # membre protégé niveau warn
+}
+
 # ─── UTILITAIRES ──────────────────────────────────────────────────────────────
 def xp_for_level(lvl): return int(100 * (lvl ** 1.5))
 
@@ -3921,6 +3926,65 @@ async def on_voice_state_update(member, before, after):
                     pass
                 await _sanction_voc_actor(guild, actor, member, "sourd serveur forcé")
                 return
+
+    # ── PROTECTION VOC légère (mute + warn) ──────────────────────────────────
+    if member.id in VOC_WARN_USERS:
+        action_done = None
+        if before.channel is not None and after.channel is None:
+            action_done = "déconnexion forcée"
+            audit_action = discord.AuditLogAction.member_disconnect
+        elif not before.mute and after.mute:
+            action_done = "mute serveur forcé"
+            audit_action = discord.AuditLogAction.member_update
+        elif not before.deaf and after.deaf:
+            action_done = "sourd serveur forcé"
+            audit_action = discord.AuditLogAction.member_update
+        else:
+            audit_action = None
+
+        if action_done:
+            await asyncio.sleep(1.0)
+            actor = None
+            try:
+                async for entry in guild.audit_logs(limit=5, action=audit_action):
+                    age = (datetime.utcnow() - entry.created_at.replace(tzinfo=None)).total_seconds()
+                    if age < 8 and entry.user.id != guild.me.id and entry.user.id != member.id:
+                        actor = entry.user
+                        break
+            except Exception:
+                pass
+
+            if actor:
+                actor_member = guild.get_member(actor.id)
+                if actor_member and not has_sanction_role(actor_member, list(VOC_PROTECTED_ALLOWED_ROLES)):
+                    # 1️⃣ Mute serveur 10 minutes
+                    try:
+                        until = discord.utils.utcnow() + timedelta(minutes=10)
+                        await actor_member.timeout(until, reason=f"🔒 Protection voc — {action_done}")
+                    except Exception:
+                        pass
+
+                    # 2️⃣ Ajouter 1 avertissement en DB
+                    await log_sanction(
+                        guild, actor_member, "Warn",
+                        f"Action non autorisée sur un membre protégé : {action_done}",
+                        guild.me
+                    )
+
+                    # 3️⃣ Alerte
+                    e = discord.Embed(
+                        title="⚠️ Protection VOC — Mute + Avertissement",
+                        description=f"{actor_member.mention} a tenté une action non autorisée sur un membre protégé.",
+                        color=discord.Color.orange(),
+                        timestamp=datetime.utcnow()
+                    )
+                    e.add_field(name="🎯 Membre protégé", value=f"<@{member.id}>", inline=True)
+                    e.add_field(name="⚠️ Responsable",    value=f"{actor_member.mention} (`{actor_member.id}`)", inline=True)
+                    e.add_field(name="⚡ Action tentée",  value=action_done.capitalize(), inline=False)
+                    e.add_field(name="✅ Sanctions",      value="🔇 Mute 10 minutes\n📋 1 avertissement ajouté", inline=False)
+                    e.set_footer(text="Kozakura Security • Protection VOC")
+                    await log_security(guild, e)
+                    return
 
     # ── Anti-spam vocal ───────────────────────────────────────────────────────
     if before.channel != after.channel:
