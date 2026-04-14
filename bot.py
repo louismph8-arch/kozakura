@@ -3008,43 +3008,6 @@ async def ticket_remove(ctx, member: discord.Member):
     le.add_field(name="Ticket", value=f"#{data['number']}")
     await log_ticket(ctx.guild, le)
 
-@bot.command()
-@staff_only()
-async def closeticket(ctx, *, reason="Aucune raison"):
-    """!closeticket [raison] — Ferme le ticket actuel"""
-    gid = str(ctx.guild.id); tid = str(ctx.channel.id)
-    if gid not in tickets_db or tid not in tickets_db[gid]:
-        return await ctx.send("❌ Cette commande s'utilise dans un salon de ticket.")
-
-    data = tickets_db[gid][tid]
-    tickets_db[gid][tid]["status"]       = "closed"
-    tickets_db[gid][tid]["closed_by"]    = str(ctx.author.id)
-    tickets_db[gid][tid]["closed_at"]    = str(datetime.utcnow())
-    tickets_db[gid][tid]["close_reason"] = reason
-    save_json("tickets.json", tickets_db)
-
-    author = ctx.guild.get_member(int(data["author_id"]))
-    e = discord.Embed(title="🔒 Ticket Fermé",
-        description=f"Fermé par {ctx.author.mention}\n**Raison :** {reason}",
-        color=discord.Color.red(), timestamp=datetime.utcnow())
-    await ctx.send(embed=e)
-
-    if author:
-        await dm(author, "🎫 Ton ticket a été fermé",
-            f"**Serveur :** {ctx.guild.name}\n**Ticket :** #{data['number']}\n"
-            f"**Type :** {data.get('type','?').capitalize()}\n**Raison :** {reason}\n\n"
-            "Merci d'avoir contacté le support !", color=discord.Color.orange())
-
-    le = discord.Embed(title="🔒 Ticket Fermé", description=f"Fermé par {ctx.author.mention}",
-        color=discord.Color.red(), timestamp=datetime.utcnow())
-    le.add_field(name="Ticket", value=f"#{data['number']}")
-    le.add_field(name="Raison", value=reason, inline=False)
-    await log_ticket(ctx.guild, le)
-
-    await asyncio.sleep(10)
-    try: await ctx.channel.delete()
-    except Exception: pass
-
 @bot.command(name="tickets")
 @staff_only()
 async def list_tickets(ctx):
