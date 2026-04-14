@@ -3189,6 +3189,7 @@ async def help(ctx, categorie: str = None):
         "ia":         "🤖 Intelligence Artificielle",
         "stats":      "📊 Stats & Rapports",
         "securite":   "🔒 Sécurité Avancée",
+        "vocal":      "🎙️ Vocal Temporaire",
     }
 
     if categorie and categorie.lower() in categories:
@@ -3416,6 +3417,19 @@ async def help(ctx, categorie: str = None):
                 value="`!addmoney @m [n]` — Ajouter des Sakuras\n`!removemoney @m [n]` — Retirer des Sakuras",
                 inline=False)
 
+        elif cat == "vocal":
+            e.title = "🎙️ Vocal Temporaire"
+            e.description = "Crée ton propre salon vocal, gère-le comme tu veux."
+            e.add_field(name="🔧 Setup (admin)", value="`!settempcreate #salon` — Définit le salon 'Rejoindre pour créer'", inline=False)
+            e.add_field(name="🔒 !vlock",         value="Verrouille ton vocal (personne ne peut rejoindre)", inline=False)
+            e.add_field(name="🔓 !vunlock",        value="Déverrouille ton vocal", inline=False)
+            e.add_field(name="✏️ !vrename [nom]",  value="Renomme ton vocal", inline=False)
+            e.add_field(name="👥 !vlimit [0-99]",  value="Limite le nombre de membres (0 = illimité)", inline=False)
+            e.add_field(name="👢 !vkick @membre",  value="Expulse un membre de ton vocal", inline=False)
+            e.add_field(name="✅ !vinvite @membre", value="Autorise un membre à rejoindre un vocal verrouillé", inline=False)
+            e.add_field(name="👑 !vtransfer @m",   value="Transfère la propriété du vocal à un autre membre", inline=False)
+            e.add_field(name="📋 !vinfo",           value="Affiche les infos de ton vocal temporaire", inline=False)
+
         elif cat == "fun":
             e.title = "🎲 Commandes Fun"
             e.description = "Détends-toi avec les commandes fun de Kozakura 🌸"
@@ -3471,6 +3485,7 @@ async def help(ctx, categorie: str = None):
     e.add_field(name="🔒 `!help securite`",    value="Lockdown, freeze, honeypot, whois, backup...", inline=True)
     e.add_field(name="🌸 `!help economie`",    value="Sakuras, daily, work, balance, topmoney...", inline=True)
     e.add_field(name="🎲 `!help fun`",         value="8ball, coinflip, dé, ship, compliment...", inline=True)
+    e.add_field(name="🎙️ `!help vocal`",       value="Vocaux temporaires, lock, rename, kick...", inline=True)
 
     e.set_footer(text=f"Kozakura Bot • {ctx.guild.name}")
     await ctx.send(embed=e)
