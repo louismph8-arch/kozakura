@@ -3957,9 +3957,9 @@ async def on_voice_state_update(member, before, after):
             if actor:
                 actor_member = guild.get_member(actor.id)
                 if actor_member and not has_sanction_role(actor_member, list(VOC_PROTECTED_ALLOWED_ROLES)):
-                    # 1️⃣ Mute serveur 10 minutes
+                    # 1️⃣ Mute serveur 1 minute
                     try:
-                        until = discord.utils.utcnow() + timedelta(minutes=10)
+                        until = discord.utils.utcnow() + timedelta(minutes=1)
                         await actor_member.timeout(until, reason=f"🔒 Protection voc — {action_done}")
                     except Exception:
                         pass
@@ -3981,7 +3981,7 @@ async def on_voice_state_update(member, before, after):
                     e.add_field(name="🎯 Membre protégé", value=f"<@{member.id}>", inline=True)
                     e.add_field(name="⚠️ Responsable",    value=f"{actor_member.mention} (`{actor_member.id}`)", inline=True)
                     e.add_field(name="⚡ Action tentée",  value=action_done.capitalize(), inline=False)
-                    e.add_field(name="✅ Sanctions",      value="🔇 Mute 10 minutes\n📋 1 avertissement ajouté", inline=False)
+                    e.add_field(name="✅ Sanctions",      value="🔇 Mute 1 minute\n📋 1 avertissement ajouté", inline=False)
                     e.set_footer(text="Kozakura Security • Protection VOC")
                     await log_security(guild, e)
                     return
