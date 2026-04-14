@@ -245,6 +245,9 @@ lockdown_backup  = {}   # {channel_id: overwrites sauvegardées}
 # Cache invitations : {guild_id: {code: uses}}
 invite_cache = {}
 
+# Salons vocaux temporaires : {channel_id: owner_id}
+temp_voice_channels = {}
+
 # Comptes suspects — âge minimum en jours
 ACCOUNT_MIN_AGE_DAYS  = 7    # Âge minimum compte en jours
 VETERAN_DAYS          = 180  # Jours pour être considéré vétéran
@@ -3973,6 +3976,41 @@ async def on_voice_state_update(member, before, after):
                     e.set_footer(text="Kozakura Security • Protection VOC")
                     await log_security(guild, e)
                     return
+
+    # ── Vocal temporaire (Join to Create) ────────────────────────────────────
+    create_ch_id = get_cfg(guild.id, "temp_voice_create_channel")
+    if create_ch_id and after.channel and str(after.channel.id) == str(create_ch_id):
+        # L'utilisateur rejoint le salon "Créer un vocal"
+        category = after.channel.category
+        try:
+            new_ch = await guild.create_voice_channel(
+                name=f"🎙️ {member.display_name}",
+                category=category,
+                overwrites={
+                    guild.default_role: discord.PermissionOverwrite(connect=True, speak=True),
+                    member: discord.PermissionOverwrite(
+                        connect=True, speak=True, mute_members=True,
+                        deafen_members=True, move_members=True, manage_channels=True
+                    ),
+                    guild.me: discord.PermissionOverwrite(
+                        connect=True, manage_channels=True, move_members=True
+                    ),
+                },
+                reason=f"Vocal temporaire créé par {member}"
+            )
+            temp_voice_channels[new_ch.id] = member.id
+            await member.move_to(new_ch, reason="Vocal temporaire")
+        except Exception:
+            pass
+
+    # Suppression du vocal temporaire quand il est vide
+    if before.channel and before.channel.id in temp_voice_channels:
+        if len(before.channel.members) == 0:
+            try:
+                await before.channel.delete(reason="Vocal temporaire vide")
+                temp_voice_channels.pop(before.channel.id, None)
+            except Exception:
+                pass
 
     # ── Anti-spam vocal ───────────────────────────────────────────────────────
     if before.channel != after.channel:
@@ -9156,6 +9194,132 @@ async def userinfo(ctx, member: discord.Member = None):
     e.set_footer(text=f"Kozakura  •  {ctx.guild.name}")
     await ctx.send(embed=e)
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🎙️ VOCAL TEMPORAIRE — GESTION
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _get_temp_channel(ctx):
+    """Retourne le salon temp de l'auteur s'il en est le propriétaire."""
+    if ctx.author.voice and ctx.author.voice.channel:
+        ch = ctx.author.voice.channel
+        if temp_voice_channels.get(ch.id) == ctx.author.id:
+            return ch
+    return None
+
+@bot.command(name="settempcreate")
+@commands.has_permissions(administrator=True)
+async def settempcreate(ctx, *, arg: str):
+    """!settempcreate #salon — Définit le salon 'Rejoindre pour créer un vocal'"""
+    channel = await resolve_channel(ctx, arg)
+    if not channel:
+        return await ctx.send("❌ Salon introuvable.")
+    set_cfg(ctx.guild.id, "temp_voice_create_channel", channel.id)
+    await ctx.send(
+        f"✅ Salon configuré : **{channel.name}**\n"
+        f"Quand quelqu'un le rejoint, un vocal temporaire lui est créé automatiquement."
+    )
+
+@bot.command(name="vlock")
+async def vlock(ctx):
+    """!vlock — Verrouille ton vocal (personne ne peut rejoindre)"""
+    ch = _get_temp_channel(ctx)
+    if not ch:
+        return await ctx.send("❌ Tu dois être dans ton propre vocal temporaire.", delete_after=5)
+    await ch.set_permissions(ctx.guild.default_role, connect=False)
+    e = discord.Embed(description=f"🔒 **{ch.name}** — Vocal verrouillé.", color=discord.Color.red())
+    await ctx.send(embed=e, delete_after=10)
+
+@bot.command(name="vunlock")
+async def vunlock(ctx):
+    """!vunlock — Déverrouille ton vocal"""
+    ch = _get_temp_channel(ctx)
+    if not ch:
+        return await ctx.send("❌ Tu dois être dans ton propre vocal temporaire.", delete_after=5)
+    await ch.set_permissions(ctx.guild.default_role, connect=True)
+    e = discord.Embed(description=f"🔓 **{ch.name}** — Vocal déverrouillé.", color=discord.Color.green())
+    await ctx.send(embed=e, delete_after=10)
+
+@bot.command(name="vrename")
+async def vrename(ctx, *, name: str):
+    """!vrename [nom] — Renomme ton vocal"""
+    ch = _get_temp_channel(ctx)
+    if not ch:
+        return await ctx.send("❌ Tu dois être dans ton propre vocal temporaire.", delete_after=5)
+    await ch.edit(name=name[:100])
+    e = discord.Embed(description=f"✏️ Vocal renommé en **{name[:100]}**.", color=0xFF89B4)
+    await ctx.send(embed=e, delete_after=10)
+
+@bot.command(name="vlimit")
+async def vlimit(ctx, limit: int):
+    """!vlimit [0-99] — Définit la limite d'utilisateurs (0 = illimité)"""
+    ch = _get_temp_channel(ctx)
+    if not ch:
+        return await ctx.send("❌ Tu dois être dans ton propre vocal temporaire.", delete_after=5)
+    limit = max(0, min(99, limit))
+    await ch.edit(user_limit=limit)
+    val = f"**{limit}** utilisateurs" if limit > 0 else "Illimité"
+    e = discord.Embed(description=f"👥 Limite définie : {val}.", color=0xFF89B4)
+    await ctx.send(embed=e, delete_after=10)
+
+@bot.command(name="vkick")
+async def vkick(ctx, target: discord.Member):
+    """!vkick @membre — Expulse un membre de ton vocal"""
+    ch = _get_temp_channel(ctx)
+    if not ch:
+        return await ctx.send("❌ Tu dois être dans ton propre vocal temporaire.", delete_after=5)
+    if target not in ch.members:
+        return await ctx.send("❌ Ce membre n'est pas dans ton vocal.", delete_after=5)
+    await target.move_to(None, reason=f"Expulsé du vocal par {ctx.author}")
+    e = discord.Embed(description=f"👢 **{target.display_name}** a été expulsé du vocal.", color=discord.Color.orange())
+    await ctx.send(embed=e, delete_after=10)
+
+@bot.command(name="vinvite")
+async def vinvite(ctx, target: discord.Member):
+    """!vinvite @membre — Autorise un membre à rejoindre ton vocal verrouillé"""
+    ch = _get_temp_channel(ctx)
+    if not ch:
+        return await ctx.send("❌ Tu dois être dans ton propre vocal temporaire.", delete_after=5)
+    await ch.set_permissions(target, connect=True)
+    e = discord.Embed(description=f"✅ **{target.display_name}** peut rejoindre ton vocal.", color=discord.Color.green())
+    await ctx.send(embed=e, delete_after=10)
+
+@bot.command(name="vtransfer")
+async def vtransfer(ctx, target: discord.Member):
+    """!vtransfer @membre — Transfère la propriété de ton vocal"""
+    ch = _get_temp_channel(ctx)
+    if not ch:
+        return await ctx.send("❌ Tu dois être dans ton propre vocal temporaire.", delete_after=5)
+    if target not in ch.members:
+        return await ctx.send("❌ Ce membre doit être dans le vocal.", delete_after=5)
+    temp_voice_channels[ch.id] = target.id
+    await ch.set_permissions(ctx.author, overwrite=None)
+    await ch.set_permissions(target, connect=True, speak=True, mute_members=True,
+        deafen_members=True, move_members=True, manage_channels=True)
+    e = discord.Embed(
+        description=f"👑 Propriété transférée à **{target.display_name}**.",
+        color=0xFF89B4
+    )
+    await ctx.send(embed=e, delete_after=10)
+
+@bot.command(name="vinfo")
+async def vinfo(ctx):
+    """!vinfo — Infos sur ton vocal temporaire"""
+    if not ctx.author.voice or not ctx.author.voice.channel:
+        return await ctx.send("❌ Tu n'es pas en vocal.", delete_after=5)
+    ch = ctx.author.voice.channel
+    owner_id = temp_voice_channels.get(ch.id)
+    if not owner_id:
+        return await ctx.send("❌ Ce n'est pas un vocal temporaire.", delete_after=5)
+    owner = ctx.guild.get_member(owner_id)
+    e = discord.Embed(title=f"🎙️ {ch.name}", color=0xFF89B4, timestamp=datetime.utcnow())
+    e.add_field(name="👑 Propriétaire", value=owner.mention if owner else f"`{owner_id}`", inline=True)
+    e.add_field(name="👥 Membres",      value=str(len(ch.members)), inline=True)
+    e.add_field(name="🔢 Limite",       value=str(ch.user_limit) if ch.user_limit else "Illimité", inline=True)
+    locked = ctx.guild.default_role in ch.overwrites and ch.overwrites[ctx.guild.default_role].connect is False
+    e.add_field(name="🔒 Statut", value="Verrouillé" if locked else "Ouvert", inline=True)
+    e.set_footer(text="Kozakura • Vocal temporaire")
+    await ctx.send(embed=e)
 
 if __name__ == "__main__":
     if sys.platform == "win32":
