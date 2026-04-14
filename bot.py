@@ -261,6 +261,11 @@ async def log_security(guild, embed):
 
 async def nuke_action(guild, member, action_type: str):
     """Enregistre une action potentiellement nuisible et alerte si seuil atteint"""
+    # Rôles exemptés — pas de restriction automatique
+    member_role_names = [r.name for r in member.roles]
+    if any(r in member_role_names for r in NUKE_EXEMPT_ROLES):
+        return
+
     now = time.time()
     uid = str(member.id)
     nuke_tracker[uid].append(now)
@@ -295,14 +300,16 @@ async def nuke_action(guild, member, action_type: str):
         nuke_tracker[uid] = []  # Reset
 
 
-# ─── NOMS DES RÔLES TICKETS (à personnaliser selon ton serveur) ───────────────
-# Change ces noms pour qu'ils correspondent EXACTEMENT aux rôles dans ton serveur
-ROLE_GESTION_STAFF  = "Gestion"
-ROLE_GESTION_ABUS   = "Support"
-ROLE_COD            = "B#tch"                # Peut tout voir
-ROLE_COD_ID         = 1478530602037674148    # ID Discord du rôle B#tch
-ROLE_PARTENARIAT    = "Partenariat"           # Visible uniquement par B#tch
-ROLE_JUGE           = "Gestion"              # Rôle requis pour le tribunal
+# ─── NOMS DES RÔLES (à personnaliser selon ton serveur) ──────────────────────
+ROLE_GESTION_STAFF  = "Gestion Staff"
+ROLE_GESTION_ABUS   = "Gestion Abus"
+ROLE_COD            = "kozakura C.O.D"       # Peut tout voir
+ROLE_COD_ID         = 1478530602037674148    # ID Discord du rôle kozakura C.O.D
+ROLE_PARTENARIAT    = "Partenariat"
+ROLE_JUGE           = "Gestion Staff"        # Rôle requis pour le tribunal
+
+# Rôles exemptés de l'anti-nuke et des sécurités automatiques
+NUKE_EXEMPT_ROLES = ("kozakura", "kozakura C.O.D", "Co Propriétaire", "Développer")
 
 # ─── UTILITAIRES ──────────────────────────────────────────────────────────────
 def xp_for_level(lvl): return int(100 * (lvl ** 1.5))
@@ -1330,10 +1337,10 @@ async def log_sanction(guild, member, type_sanction, reason, moderator, extra=""
     return e
 
 # ─── RÔLES AUTORISÉS POUR LES SANCTIONS ──────────────────────────────────────
-ROLES_BAN  = ("B#tch", "Univers", "Queen", "Baby admin", "Développer", "[+] Kozakura gestion")
-ROLES_KICK = ("B#tch", "Univers", "Queen", "Baby admin", "Développer", "[+] Kozakura gestion")
-ROLES_MUTE = ["B#tch", "Univers", "Queen", "Baby admin", "Développer", "[+] Kozakura gestion", "Gestion", "Support"]
-ROLES_WARN = ["B#tch", "Univers", "Queen", "Baby admin", "Développer", "[+] Kozakura gestion", "Gestion", "Support"]
+ROLES_BAN  = ("kozakura", "kozakura C.O.D", "Co Propriétaire", "Développer", "Royal", "Chef Gestion", "[+] Kozakura gestion", "A. Kozakura")
+ROLES_KICK = ("kozakura", "kozakura C.O.D", "Co Propriétaire", "Développer", "Royal", "Chef Gestion", "[+] Kozakura gestion", "A. Kozakura")
+ROLES_MUTE = ["kozakura", "kozakura C.O.D", "Co Propriétaire", "Développer", "Royal", "Chef Gestion", "[+] Kozakura gestion", "A. Kozakura", "Gestion Staff", "Gestion Modérations", "Gestion Abus", "Gestion"]
+ROLES_WARN = ["kozakura", "kozakura C.O.D", "Co Propriétaire", "Développer", "Royal", "Chef Gestion", "[+] Kozakura gestion", "A. Kozakura", "Gestion Staff", "Gestion Modérations", "Gestion Abus", "Gestion"]
 
 def has_sanction_role(member, roles_list):
     """Vérifie si le membre a l'un des rôles autorisés"""
@@ -1739,45 +1746,22 @@ async def send_welcome(guild: discord.Guild, member: discord.Member, give_xp: bo
     """Envoie l'embed de bienvenue dans le salon WELCOME_CHANNEL_ID."""
     chat_ch = guild.get_channel(WELCOME_CHANNEL_ID)
     if not chat_ch:
-        return  # salon introuvable, rien à faire
-
-    SAKURA_PINK = 0xFF89B4
-
-    gid = str(guild.id); uid = str(member.id)
-    gid_data = xp_db.setdefault(gid, {})
+        return
 
     if give_xp:
+        gid = str(guild.id); uid = str(member.id)
+        gid_data = xp_db.setdefault(gid, {})
         gid_data[uid] = gid_data.get(uid, 0) + 50
         save_json("xp.json", xp_db)
 
-    new_xp   = gid_data.get(uid, 0)
-    lvl      = get_level(new_xp)
-    next_xp  = xp_for_level(lvl + 1)
-    sorted_lb = sorted(gid_data.items(), key=lambda x: x[1], reverse=True)
-    rank_pos  = next((i + 1 for i, (u, _) in enumerate(sorted_lb) if u == uid), None)
-
-    progress = new_xp / next_xp if next_xp > 0 else 1
-    bar      = "🌸" * int(progress * 12) + "・" * (12 - int(progress * 12))
-
     e = discord.Embed(
-        description=(
-            f"## 🌸  Bienvenue, {member.mention} !\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"Tu es le **{guild.member_count}ème** membre de **Kozakura**.\n"
-        ),
-        color=SAKURA_PINK,
-        timestamp=datetime.utcnow()
+        description=f"🌸  Bienvenue {member.mention} — tu es le **{guild.member_count}ème** membre !",
+        color=0xFF89B4
     )
-    e.set_author(name=str(member), icon_url=member.display_avatar.url)
-    e.set_thumbnail(url=member.display_avatar.url)
     if guild.banner:
         e.set_image(url=guild.banner.url)
     elif guild.icon:
         e.set_image(url=guild.icon.url)
-    e.add_field(name="🎁 Bonus",   value="+50 XP offerts" if give_xp else "Bonne arrivée !", inline=True)
-    e.add_field(name="📊 Niveau",  value=f"Niv. {lvl}  •  {new_xp} XP", inline=True)
-    e.add_field(name="👥 Membres", value=str(guild.member_count), inline=True)
-    e.set_footer(text="Kozakura  •  Bon séjour parmi nous 🌸", icon_url=guild.me.display_avatar.url)
     await chat_ch.send(embed=e)
 
 
