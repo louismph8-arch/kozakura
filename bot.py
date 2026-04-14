@@ -622,14 +622,23 @@ async def on_member_join(member):
     await log(guild, e)
 
 async def _log_invite_join(guild, member, invite, inviter):
-    """Envoie un embed de log d'invitation dans le salon configuré."""
+    """Envoie un embed de log d'invitation dans le salon configuré ou auto-détecté."""
+    ch = None
     ch_id = get_cfg(guild.id, "invite_log_channel")
-    if not ch_id:
-        return
-    ch = guild.get_channel(int(ch_id))
+    if ch_id:
+        ch = guild.get_channel(int(ch_id))
+        if not ch:
+            try: ch = await guild.fetch_channel(int(ch_id))
+            except: ch = None
+    # Auto-détection si pas configuré
     if not ch:
-        try: ch = await guild.fetch_channel(int(ch_id))
-        except: return
+        INVITE_LOG_KEYWORDS = ["invitations", "invite-log", "log-invite", "logs-invite", "invite"]
+        ch = discord.utils.find(
+            lambda c: any(kw in c.name.lower() for kw in INVITE_LOG_KEYWORDS),
+            guild.text_channels
+        )
+    if not ch:
+        return
 
     e = discord.Embed(
         title="📨 Invitation utilisée",
