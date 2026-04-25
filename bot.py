@@ -17,8 +17,13 @@ from collections import defaultdict
 # ─── ANTHROPIC AI (Claude) ────────────────────────────────────────────────────
 import anthropic as _anthropic
 
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-CLAUDE_MODEL      = "claude-haiku-4-5"  # Rapide et économique pour un bot Discord
+ANTHROPIC_API_KEY = (
+    os.getenv("ANTHROPIC_API_KEY")
+    or os.getenv("CLAUDE_API_KEY")
+    or os.getenv("ANTHROPIC_KEY")
+    or ""
+)
+CLAUDE_MODEL = "claude-haiku-4-5"  # Mis à jour si nécessaire
 
 # Historique des conversations par utilisateur {user_id: [messages]}
 ai_conversations = {}
@@ -67,15 +72,32 @@ async def call_claude(messages: list, member_ctx: dict = None) -> str:
         )
         return response.content[0].text.strip()
     except _anthropic.BadRequestError as e:
-        print(f"[Claude] BadRequest: {e.message}")
-        return f"❌ Requête invalide : {str(e.message)[:150]}"
+        msg = getattr(e, 'message', str(e))
+        print(f"[Claude] BadRequest: {msg}")
+        return f"❌ Requête invalide : {str(msg)[:150]}"
     except _anthropic.AuthenticationError:
-        return "❌ Clé API Anthropic invalide."
+        print("[Claude] Clé API invalide !")
+        return "❌ Clé API Anthropic invalide — vérifie la variable ANTHROPIC_API_KEY dans Railway."
+    except _anthropic.NotFoundError as e:
+        # Modèle introuvable → fallback automatique
+        print(f"[Claude] Modèle '{CLAUDE_MODEL}' introuvable, tentative avec claude-3-5-haiku-20241022")
+        try:
+            client2 = _anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+            response2 = await client2.messages.create(
+                model="claude-3-5-haiku-20241022",
+                max_tokens=500,
+                system=system,
+                messages=messages
+            )
+            return response2.content[0].text.strip()
+        except Exception as e2:
+            return f"❌ Modèle IA indisponible : {str(e2)[:100]}"
     except _anthropic.RateLimitError:
         return "⏰ Limite de requêtes atteinte, réessaie dans un moment !"
     except _anthropic.APIConnectionError:
         return "❌ Impossible de contacter l'API Claude."
     except Exception as e:
+        print(f"[Claude] Erreur inattendue : {e}")
         return f"❌ Erreur : {str(e)[:100]}"
 
 async def detect_conflict(content: str) -> bool:
@@ -422,6 +444,10 @@ async def resolve_role(ctx, arg: str):
 @bot.event
 async def on_ready():
     print(f"✅  {bot.user}  connecté !")
+    if ANTHROPIC_API_KEY:
+        print(f"🤖 Clé API Anthropic détectée (longueur : {len(ANTHROPIC_API_KEY)})")
+    else:
+        print("⚠️  ANTHROPIC_API_KEY introuvable — fonctions IA désactivées")
     await bot.change_presence(activity=discord.Activity(
         type=discord.ActivityType.watching, name=f"le serveur | {PREFIX}help"))
     check_reminders.start()
