@@ -1039,7 +1039,12 @@ async def on_message(message):
         or has_sanction_role(author, ROLES_BAN)  # Staff autorisé partout
     )
 
-    for url in re.findall(r'https?://\S+|discord\.gg/\S+|discord\.com/invite/\S+', message.content, re.IGNORECASE):
+    # Regex étendu : capture aussi discordapp.com/invite/ avec ou sans https://
+    _url_pattern = re.compile(
+        r'https?://\S+|discord\.gg/\S+|discord\.com/invite/\S+|discordapp\.com/invite/\S+',
+        re.IGNORECASE
+    )
+    for url in _url_pattern.findall(message.content):
         url_low = url.lower()
         is_suspicious    = any(d in url_low for d in SUSPICIOUS_LINKS)
         is_short_link    = any(d in url_low for d in SHORT_LINKS_STRICT) and not has_sanction_role(author, ROLES_BAN)
@@ -1080,20 +1085,22 @@ async def on_message(message):
 
             label = "Invitation Discord" if is_discord_invite else "Lien Suspect"
             e = discord.Embed(
-                title=f"🔗 {label} Supprimé",
-                description=f"{author.mention} — lien supprimé",
-                color=discord.Color.red(), timestamp=datetime.utcnow()
+                title=f"🔗 {label} Supprimé — Ban Auto",
+                description=f"{author.mention} a envoyé une invitation/lien interdit.",
+                color=discord.Color.dark_red(), timestamp=datetime.utcnow()
             )
-            e.add_field(name="URL", value=f"||{url[:200]}||")
-            await log(guild, e)
+            e.add_field(name="URL",    value=f"||{url[:200]}||", inline=False)
+            e.add_field(name="Membre", value=f"{author} (`{author.id}`)", inline=True)
+            e.add_field(name="Action", value="🔨 Ban automatique", inline=True)
+            await log_security(guild, e)
             await message.channel.send(
-                f"{author.mention} les liens/invitations sont interdits ici. 🔗", delete_after=5
+                f"⛔ {author.mention} a été banni automatiquement pour publicité/invitation Discord.", delete_after=8
             )
-            if not has_sanction_role(author, ROLES_BAN + ROLES_MUTE):
+            # Ban automatique si non-staff
+            if not has_sanction_role(author, list(ROLES_BAN) + list(ROLES_MUTE)):
                 try:
-                    until = discord.utils.utcnow() + timedelta(minutes=5)
-                    await author.timeout(until, reason=f"[Auto-mod] Lien interdit : {url[:100]}")
-                    await log_sanction(guild, author, "Mute", "[Auto-mod] Lien interdit", bot.user or author, extra="5 minutes • Lien/Invitation Discord")
+                    await guild.ban(author, reason=f"[Auto-mod] Invitation Discord interdite : {url[:100]}", delete_message_days=1)
+                    await log_sanction(guild, author, "Ban", "[Auto-mod] Invitation/pub Discord", bot.user or author, extra="Ban automatique • Invitation Discord")
                 except Exception: pass
             return
 
