@@ -1560,22 +1560,91 @@ def has_sanction_role(member, roles_list):
     member_roles = [r.name for r in member.roles]
     return any(r in member_roles for r in roles_list)
 
-def staff_only(roles=None):
-    """Décorateur custom : vérifie que l'auteur a un rôle staff (ROLES_WARN par défaut)"""
+def has_mod_perm(member, roles_list, admin_only=False):
+    """
+    Vérifie rôle custom OU permissions Discord natives.
+    Permet au bot de fonctionner sur n'importe quel serveur
+    même sans les rôles Kozakura configurés.
+    """
+    if has_sanction_role(member, roles_list):
+        return True
+    p = member.guild_permissions
+    if admin_only:
+        return p.administrator
+    # Fallback : toute permission de modération Discord native
+    return (p.administrator or p.ban_members or p.kick_members
+            or p.manage_roles or p.manage_guild or p.moderate_members)
+
+def staff_only(roles=None, admin_only=False):
+    """Décorateur custom : vérifie rôle staff OU permissions Discord natives"""
     async def predicate(ctx):
         r = roles if roles is not None else ROLES_WARN
-        if has_sanction_role(ctx.author, r):
+        if has_mod_perm(ctx.author, r, admin_only=admin_only):
             return True
         await ctx.send("❌ Tu n'as pas la permission d'utiliser cette commande.", delete_after=5)
         return False
     return commands.check(predicate)
+
+# ─── SETUP MULTI-SERVEUR ──────────────────────────────────────────────────────
+@bot.command(name="setup")
+@commands.has_permissions(administrator=True)
+async def setup_bot(ctx):
+    """!setup — Guide de configuration du bot pour un nouveau serveur"""
+    gid = ctx.guild.id
+    cat_id   = get_cfg(gid, "ticket_category")
+    log_id   = get_cfg(gid, "log_channel")
+    tlog_id  = get_cfg(gid, "ticket_log_channel")
+    welcome  = get_cfg(gid, "welcome_channel")
+
+    def status(val): return "✅" if val else "❌"
+
+    e = discord.Embed(
+        title="⚙️  Configuration du Bot",
+        description=(
+            "Voici l'état de la configuration sur ce serveur.\n"
+            "Les commandes de modération fonctionnent **automatiquement** pour\n"
+            "les membres avec permission Discord (ban, kick, admin…).\n\n"
+            "Pour personnaliser, utilise les commandes ci-dessous :"
+        ),
+        color=discord.Color.blurple(),
+        timestamp=datetime.utcnow()
+    )
+    e.add_field(
+        name="📋 État actuel",
+        value=(
+            f"{status(log_id)} Salon logs : `!setlog #salon`\n"
+            f"{status(welcome)} Salon bienvenue : `!setwelcome #salon`\n"
+            f"{status(cat_id)} Catégorie tickets : `!setticketcategory NomCatégorie`\n"
+            f"{status(tlog_id)} Logs tickets : `!setticketlog #salon`\n"
+        ),
+        inline=False
+    )
+    e.add_field(
+        name="🎫 Tickets",
+        value=(
+            "`!ticketpanel` → Envoie le panel de création de tickets\n"
+            "`!setticketcategory` → Définit où les tickets sont créés"
+        ),
+        inline=False
+    )
+    e.add_field(
+        name="🛡️ Modération",
+        value=(
+            "Les commandes `!ban`, `!kick`, `!mute`, `!warn` etc.\n"
+            "sont accessibles à quiconque a les **permissions Discord** correspondantes.\n"
+            "Pas besoin de configurer des rôles spécifiques."
+        ),
+        inline=False
+    )
+    e.set_footer(text=f"Bot actif sur {ctx.guild.name}")
+    await ctx.send(embed=e)
 
 # ─── MODÉRATION ───────────────────────────────────────────────────────────────
 @bot.command()
 async def ban(ctx, member: discord.Member = None, *, reason="Aucune raison"):
     if member is None:
         return await ctx.send("❌ Mentionne un membre : `!ban @membre [raison]`", delete_after=5)
-    if not has_sanction_role(ctx.author, ROLES_BAN):
+    if not has_mod_perm(ctx.author, ROLES_BAN):
         return await ctx.send("❌ Tu n'as pas la permission de bannir.", delete_after=5)
     if member.top_role >= ctx.guild.me.top_role:
         return await ctx.send("❌ Je ne peux pas bannir ce membre (son rôle est supérieur ou égal au mien).", delete_after=5)
@@ -1595,7 +1664,7 @@ async def ban(ctx, member: discord.Member = None, *, reason="Aucune raison"):
 
 @bot.command()
 async def unban(ctx, user_id: int, *, reason="Aucune raison"):
-    if not has_sanction_role(ctx.author, ROLES_BAN):
+    if not has_mod_perm(ctx.author, ROLES_BAN):
         return await ctx.send("❌ Tu n'as pas la permission de débannir.", delete_after=5)
     user = await bot.fetch_user(user_id)
     await ctx.guild.unban(user, reason=reason)
@@ -1610,7 +1679,7 @@ async def unban(ctx, user_id: int, *, reason="Aucune raison"):
 async def kick(ctx, member: discord.Member = None, *, reason="Aucune raison"):
     if member is None:
         return await ctx.send("❌ Mentionne un membre : `!kick @membre [raison]`", delete_after=5)
-    if not has_sanction_role(ctx.author, ROLES_KICK):
+    if not has_mod_perm(ctx.author, ROLES_KICK):
         return await ctx.send("❌ Tu n'as pas la permission d'expulser.", delete_after=5)
     if member.top_role >= ctx.guild.me.top_role:
         return await ctx.send("❌ Je ne peux pas expulser ce membre (hiérarchie des rôles).", delete_after=5)
@@ -1638,7 +1707,7 @@ async def kick(ctx, member: discord.Member = None, *, reason="Aucune raison"):
 async def mute(ctx, member: discord.Member = None, duration: int = 10, *, reason="Aucune raison"):
     if member is None:
         return await ctx.send("❌ Mentionne un membre : `!mute @membre [minutes] [raison]`", delete_after=5)
-    if not has_sanction_role(ctx.author, ROLES_MUTE):
+    if not has_mod_perm(ctx.author, ROLES_MUTE):
         return await ctx.send("❌ Tu n'as pas la permission de mute.", delete_after=5)
     until = discord.utils.utcnow() + timedelta(minutes=duration)
     try:
@@ -1664,7 +1733,7 @@ async def mute(ctx, member: discord.Member = None, duration: int = 10, *, reason
 
 @bot.command()
 async def unmute(ctx, member: discord.Member):
-    if not has_sanction_role(ctx.author, ROLES_MUTE):
+    if not has_mod_perm(ctx.author, ROLES_MUTE):
         return await ctx.send("❌ Tu n'as pas la permission de démute.", delete_after=5)
     await member.timeout(None)
     await dm(member, "🔊 Tu as été démuté",
@@ -1758,7 +1827,7 @@ async def slowmode(ctx, seconds: int):
 async def warn(ctx, member: discord.Member = None, *, reason="Aucune raison"):
     if member is None:
         return await ctx.send("❌ Mentionne un membre : `!warn @membre [raison]`", delete_after=5)
-    if not has_sanction_role(ctx.author, ROLES_WARN):
+    if not has_mod_perm(ctx.author, ROLES_WARN):
         return await ctx.send("❌ Tu n'as pas la permission d'avertir.", delete_after=5)
     gid = str(ctx.guild.id); uid = str(member.id)
     warnings_db.setdefault(gid, {}).setdefault(uid, []).append(
@@ -2678,8 +2747,14 @@ async def open_ticket(interaction: discord.Interaction, ticket_type: str, subjec
                         f"❌ Tu as déjà un ticket **{cfg['emoji']} {ticket_type}** ouvert : {ch.mention}",
                         ephemeral=True)
 
-    cat_id   = get_cfg(guild.id, "ticket_category") or 1493632554006347898
+    cat_id   = get_cfg(guild.id, "ticket_category")
     category = guild.get_channel(int(cat_id)) if cat_id else None
+    # Auto-détection si pas configuré : cherche une catégorie "ticket"
+    if not category:
+        category = discord.utils.find(
+            lambda c: isinstance(c, discord.CategoryChannel) and "ticket" in c.name.lower(),
+            guild.categories
+        )
 
     ticket_number = len(tickets_db.get(gid, {})) + 1
     safe_name     = author.name[:15].lower().replace(" ", "-")
@@ -3224,7 +3299,7 @@ ROLES_HELP = ("B#tch", "Univers", "Queen", "Baby admin", "Développer",
 @bot.command()
 async def help(ctx, categorie: str = None):
     """!help [catégorie] — Affiche l'aide complète ou d'une catégorie (staff uniquement)"""
-    if not has_sanction_role(ctx.author, ROLES_HELP):
+    if not has_mod_perm(ctx.author, ROLES_HELP):
         return await ctx.message.delete() if ctx.guild else None
 
     categories = {
@@ -3579,10 +3654,10 @@ async def log_rankderank(guild, embed):
 @bot.command(name="rankup")
 async def rank_up(ctx, member: discord.Member, *, reason: str = "Aucune raison"):
     """!rankup @membre [raison] — Monte le membre d'un rang"""
-    if not has_sanction_role(ctx.author, ROLES_RANKDERANK):
+    if not has_mod_perm(ctx.author, ROLES_RANKDERANK):
         return await ctx.send("❌ Tu n'as pas la permission de gérer les rangs.", delete_after=5)
     # Gestion Modérations : restriction hiérarchique (ne peut pas rank quelqu'un au-dessus ou égal)
-    if has_sanction_role(ctx.author, ["Gestion Modérations"]) and not has_sanction_role(ctx.author, ROLES_BAN):
+    if has_mod_perm(ctx.author, ["Gestion Modérations"]) and not has_mod_perm(ctx.author, ROLES_BAN):
         if member.top_role >= ctx.author.top_role:
             return await ctx.send("❌ Tu ne peux pas modifier le rang d'un membre avec un rôle supérieur ou égal au tien.", delete_after=5)
     guild = ctx.guild
@@ -3648,10 +3723,10 @@ async def rank_up(ctx, member: discord.Member, *, reason: str = "Aucune raison")
 @bot.command(name="derank")
 async def derank_down(ctx, member: discord.Member, *, reason: str = "Aucune raison"):
     """!derank @membre [raison] — Rétrograde le membre d'un rang"""
-    if not has_sanction_role(ctx.author, ROLES_RANKDERANK):
+    if not has_mod_perm(ctx.author, ROLES_RANKDERANK):
         return await ctx.send("❌ Tu n'as pas la permission de gérer les rangs.", delete_after=5)
     # Gestion Modérations : restriction hiérarchique
-    if has_sanction_role(ctx.author, ["Gestion Modérations"]) and not has_sanction_role(ctx.author, ROLES_BAN):
+    if has_mod_perm(ctx.author, ["Gestion Modérations"]) and not has_mod_perm(ctx.author, ROLES_BAN):
         if member.top_role >= ctx.author.top_role:
             return await ctx.send("❌ Tu ne peux pas modifier le rang d'un membre avec un rôle supérieur ou égal au tien.", delete_after=5)
     guild = ctx.guild
@@ -5113,7 +5188,7 @@ async def unshadowban(ctx, member: discord.Member):
 @bot.command(name="watchlist")
 async def watchlist_add(ctx, member: discord.Member, *, raison: str = "Surveillance"):
     """!watchlist @membre [raison] — Surveille un membre (alerte staff à chaque message)"""
-    if not has_sanction_role(ctx.author, ROLES_MUTE):
+    if not has_mod_perm(ctx.author, ROLES_MUTE):
         return await ctx.send("❌ Permission insuffisante.", delete_after=5)
     gid = str(ctx.guild.id); uid = str(member.id)
     watchlist_db.setdefault(gid, {})[uid] = {
@@ -5135,7 +5210,7 @@ async def watchlist_add(ctx, member: discord.Member, *, raison: str = "Surveilla
 @bot.command(name="unwatch")
 async def watchlist_remove(ctx, member: discord.Member):
     """!unwatch @membre — Retire un membre de la watchlist"""
-    if not has_sanction_role(ctx.author, ROLES_MUTE):
+    if not has_mod_perm(ctx.author, ROLES_MUTE):
         return await ctx.send("❌ Permission insuffisante.", delete_after=5)
     gid = str(ctx.guild.id); uid = str(member.id)
     if uid not in watchlist_db.get(gid, {}):
@@ -5147,7 +5222,7 @@ async def watchlist_remove(ctx, member: discord.Member):
 @bot.command(name="watchers")
 async def watchlist_view(ctx):
     """!watchers — Liste tous les membres sous surveillance"""
-    if not has_sanction_role(ctx.author, ROLES_MUTE):
+    if not has_mod_perm(ctx.author, ROLES_MUTE):
         return await ctx.send("❌ Permission insuffisante.", delete_after=5)
     gid = str(ctx.guild.id)
     data = watchlist_db.get(gid, {})
@@ -5232,7 +5307,7 @@ async def view_reports(ctx, member: discord.Member = None):
 @bot.command(name="forceban")
 async def forceban(ctx, user_id: int, *, reason: str = "Aucune raison"):
     """!forceban [id] [raison] — Bannit un utilisateur par ID même s'il n'est pas sur le serveur"""
-    if not has_sanction_role(ctx.author, ROLES_BAN):
+    if not has_mod_perm(ctx.author, ROLES_BAN):
         return await ctx.send("❌ Permission insuffisante.", delete_after=5)
     try:
         user = await bot.fetch_user(user_id)
@@ -5831,7 +5906,7 @@ async def giveaway(ctx, duration: str, winners: str, *, prize: str):
       !giveaway 2h 1w Nitro --vocal
       !giveaway 7j 1w Abonnement --msgs 100 --vocal
     """
-    if not has_sanction_role(ctx.author, ROLES_BAN) and not ctx.author.guild_permissions.manage_guild:
+    if not has_mod_perm(ctx.author, ROLES_BAN) and not ctx.author.guild_permissions.manage_guild:
         return await ctx.send("❌ Tu n'as pas la permission de créer un giveaway.", delete_after=5)
 
     seconds = parse_duration(duration)
@@ -5910,7 +5985,7 @@ async def _giveaway_timer(message_id, channel_id, guild_id, seconds):
 @bot.command()
 async def greroll(ctx, message_id: int = None):
     """!greroll [message_id] — Nouveau tirage"""
-    if not has_sanction_role(ctx.author, ROLES_BAN) and not ctx.author.guild_permissions.manage_guild:
+    if not has_mod_perm(ctx.author, ROLES_BAN) and not ctx.author.guild_permissions.manage_guild:
         return await ctx.send("❌ Tu n'as pas la permission.", delete_after=5)
 
     if message_id is None:
@@ -5962,7 +6037,7 @@ async def greroll(ctx, message_id: int = None):
 @bot.command()
 async def gend(ctx, message_id: int):
     """!gend [message_id] — Termine un giveaway immédiatement"""
-    if not has_sanction_role(ctx.author, ROLES_BAN) and not ctx.author.guild_permissions.manage_guild:
+    if not has_mod_perm(ctx.author, ROLES_BAN) and not ctx.author.guild_permissions.manage_guild:
         return await ctx.send("❌ Tu n'as pas la permission.", delete_after=5)
     if message_id not in giveaways_db:
         return await ctx.send("❌ Giveaway introuvable.")
@@ -6143,7 +6218,7 @@ async def massban(ctx, members: commands.Greedy[discord.Member], *, reason: str 
     Prépare un mass ban — à confirmer avec !massbanconfirm
     Réservé aux rôles Développer et kozakura C.O.D uniquement.
     """
-    if not has_sanction_role(ctx.author, ROLES_MASSBAN):
+    if not has_mod_perm(ctx.author, ROLES_MASSBAN):
         return await ctx.send("❌ Seuls les **kozakura C.O.D** et **Développer** peuvent utiliser le mass ban.", delete_after=5)
 
     if not members:
@@ -6178,7 +6253,7 @@ async def massban(ctx, members: commands.Greedy[discord.Member], *, reason: str 
 @bot.command()
 async def massbanconfirm(ctx):
     """!massbanconfirm — Exécute le mass ban préparé"""
-    if not has_sanction_role(ctx.author, ROLES_MASSBAN):
+    if not has_mod_perm(ctx.author, ROLES_MASSBAN):
         return await ctx.send("❌ Seuls les **kozakura C.O.D** et **Développer** peuvent confirmer le mass ban.", delete_after=5)
 
     gid = str(ctx.guild.id)
@@ -6261,7 +6336,7 @@ async def addrole(ctx, member: discord.Member, *, arg: str):
         return await ctx.send("❌ Rôle introuvable. Utilise `!addrole @membre @role` ou le nom exact.")
 
     # Rôles protégés : uniquement la couronne peut les attribuer
-    if role.name in PROTECTED_ROLES and not has_sanction_role(ctx.author, [ROLE_CROWN]):
+    if role.name in PROTECTED_ROLES and not has_mod_perm(ctx.author, [ROLE_CROWN]):
         return await ctx.send(f"👑 Seul le rôle **{ROLE_CROWN}** peut attribuer le rôle **{role.name}**.", delete_after=8)
 
     if role in member.roles:
@@ -6295,7 +6370,7 @@ async def delrole(ctx, member: discord.Member, *, arg: str):
         return await ctx.send("❌ Rôle introuvable. Utilise `!delrole @membre @role` ou le nom exact.")
 
     # Rôles protégés : uniquement la couronne peut les retirer
-    if role.name in PROTECTED_ROLES and not has_sanction_role(ctx.author, [ROLE_CROWN]):
+    if role.name in PROTECTED_ROLES and not has_mod_perm(ctx.author, [ROLE_CROWN]):
         return await ctx.send(f"👑 Seul le rôle **{ROLE_CROWN}** peut retirer le rôle **{role.name}**.", delete_after=8)
 
     if role not in member.roles:
@@ -6326,7 +6401,7 @@ async def mv(ctx, member: discord.Member, *, channel_arg: str = None):
     !mv @membre [salon vocal]  — Déplace un membre dans un salon vocal
     !mv @membre                — Déplace le membre dans ton salon vocal actuel
     """
-    if not has_sanction_role(ctx.author, ROLES_BAN) and not ctx.author.guild_permissions.move_members:
+    if not has_mod_perm(ctx.author, ROLES_BAN) and not ctx.author.guild_permissions.move_members:
         return await ctx.send("❌ Tu n'as pas la permission de déplacer des membres.", delete_after=5)
 
     # Vérifier que le membre est en vocal
@@ -6382,7 +6457,7 @@ dog_followers = {}
 @bot.command(name="dog")
 async def dog(ctx, member: discord.Member):
     """!dog @membre — Force le membre à suivre tes déplacements vocaux + emoji 🐕"""
-    if not has_sanction_role(ctx.author, ROLES_BAN) and not ctx.author.guild_permissions.move_members:
+    if not has_mod_perm(ctx.author, ROLES_BAN) and not ctx.author.guild_permissions.move_members:
         return await ctx.send("❌ Tu n'as pas la permission.", delete_after=5)
 
     if not member.voice or not member.voice.channel:
@@ -6419,7 +6494,7 @@ async def dog(ctx, member: discord.Member):
 @bot.command(name="undog")
 async def undog(ctx, member: discord.Member):
     """!undog @membre — Libère un membre du mode dog"""
-    if not has_sanction_role(ctx.author, ROLES_BAN) and not ctx.author.guild_permissions.move_members:
+    if not has_mod_perm(ctx.author, ROLES_BAN) and not ctx.author.guild_permissions.move_members:
         return await ctx.send("❌ Tu n'as pas la permission.", delete_after=5)
 
     uid = str(member.id)
@@ -6445,7 +6520,7 @@ async def undog(ctx, member: discord.Member):
 @bot.command(name="unmuteall")
 async def unmute_all(ctx):
     """!unmuteall — Démute tous les membres actuellement mutes (timeout)"""
-    if not has_sanction_role(ctx.author, ROLES_MUTE):
+    if not has_mod_perm(ctx.author, ROLES_MUTE):
         return await ctx.send("❌ Tu n'as pas la permission.", delete_after=5)
 
     count = 0
@@ -6670,7 +6745,7 @@ async def tribunal(ctx, accused: discord.Member, vote_type: str = "ban", *, moti
     Nécessite le rôle 'Gestion'
     """
     # Vérif rôle juge (Inspecteur + grades supérieurs)
-    if not has_sanction_role(ctx.author, ROLES_TRIBUNAL):
+    if not has_mod_perm(ctx.author, ROLES_TRIBUNAL):
         return await ctx.send("❌ Seuls les **Inspecteur**, **Chef Gestion** et grades supérieurs peuvent ouvrir un tribunal.")
 
     # Vérif type de vote
@@ -9136,7 +9211,7 @@ async def tempban(ctx, member: discord.Member = None, duration: str = "1h", *, r
     """!tempban @membre [durée: 30m/2h/1j] [raison] — Ban temporaire"""
     if member is None:
         return await ctx.send("❌ Usage : `!tempban @membre [durée] [raison]`", delete_after=5)
-    if not has_sanction_role(ctx.author, ROLES_BAN):
+    if not has_mod_perm(ctx.author, ROLES_BAN):
         return await ctx.send("❌ Tu n'as pas la permission de bannir.", delete_after=5)
     if member.top_role >= ctx.guild.me.top_role:
         return await ctx.send("❌ Je ne peux pas bannir ce membre (hiérarchie des rôles).", delete_after=5)
